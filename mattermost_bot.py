@@ -26,10 +26,17 @@ class MattermostBot:
     
     def __init__(self):
         """Инициализация бота"""
+        # Правильная очистка URL от протокола
+        clean_url = Config.MATTERMOST_URL if Config.MATTERMOST_URL else ''
+        if clean_url.startswith('https://'):
+            clean_url = clean_url[8:]  # Удаляем 'https://'
+        elif clean_url.startswith('http://'):
+            clean_url = clean_url[7:]  # Удаляем 'http://'
+        
         self.driver = Driver({
-            'url': Config.MATTERMOST_URL.replace('https://', '').replace('http://', ''),
+            'url': clean_url,
             'token': Config.MATTERMOST_TOKEN,
-            'scheme': 'https',
+            'scheme': 'https', 
             'port': 443,
             'basepath': '/api/v4',
             'verify': Config.MATTERMOST_SSL_VERIFY,
@@ -98,20 +105,17 @@ class MattermostBot:
                 
                 # Получаем все DM каналы, где участвует бот
                 try:
-                    # Получаем все каналы бота (используем API без team_id для DM каналов)
-                    try:
-                        # Пробуем получить все каналы пользователя
-                        all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
-                    except TypeError:
-                        # Если нужен team_id, используем первую команду (или получаем список команд)
-                        teams = self.driver.teams.get_user_teams(self.bot_user['id'])
-                        if teams:
-                            team_id = teams[0]['id']
-                            logger.debug(f"Используем team_id: {team_id}")
-                            all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
-                        else:
-                            logger.warning("Не найдено команд для пользователя")
-                            all_channels = []
+                    # Получаем все каналы бота через team_id
+                    teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+                    all_channels = []
+                    
+                    if teams:
+                        # Используем первую команду для получения каналов
+                        team_id = teams[0]['id']
+                        logger.debug(f"Используем team_id: {team_id}")
+                        all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+                    else:
+                        logger.warning("Не найдено команд для пользователя")
                     
                     # Фильтруем только DM каналы (тип 'D')
                     dm_channels = [ch for ch in all_channels if ch.get('type') == 'D']
@@ -479,8 +483,12 @@ class MattermostBot:
             # Получаем учетные данные пользователя
             username, password = self.user_auth.get_user_credentials(user_id)
             
-            # Создаем Jira клиент для пользователя
-            jira_client = JiraClient(username, password)
+            if not username or not password:
+                self.send_message_sync(channel_id, "❌ Учетные данные не найдены. Выполните команду `настройка`")
+                return
+            
+            # Создаем Jira клиент для пользователя (после проверки выше username и password точно не None)
+            jira_client = JiraClient(str(username), str(password))
             projects = jira_client.get_projects()
             
             if not projects:
@@ -549,7 +557,13 @@ class MattermostBot:
                 
                 # Получаем учетные данные пользователя
                 username, password = self.user_auth.get_user_credentials(user_id)
-                jira_client = JiraClient(username, password)
+                
+                if not username or not password:
+                    self.send_message_sync(channel_id, "❌ Учетные данные не найдены. Выполните команду `настройка`")
+                    return
+                
+                # После проверки выше username и password точно не None
+                jira_client = JiraClient(str(username), str(password))
                 
                 # Обрабатываем несколько проектов через запятую
                 project_keys = [key.strip().upper() for key in message.split(',')]
@@ -758,7 +772,12 @@ class MattermostBot:
             
             # Получаем учетные данные пользователя
             username, password = self.user_auth.get_user_credentials(user_id)
-            jira_client = JiraClient(username, password)
+            
+            if not username or not password:
+                raise ValueError("Учетные данные пользователя не найдены")
+            
+            # После проверки выше username и password точно не None
+            jira_client = JiraClient(str(username), str(password))
             
             # Получаем трудозатраты из Jira для всех проектов
             all_worklogs = []
@@ -951,17 +970,14 @@ class MattermostBot:
             logger.info(f"🔍 Ищем/создаем DM канал с пользователем {user_id}...")
             
             # Сначала проверяем, существует ли уже DM канал
-            try:
-                all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
-            except TypeError:
-                # Если нужен team_id, получаем первую команду пользователя
-                teams = self.driver.teams.get_user_teams(self.bot_user['id'])
-                if teams:
-                    team_id = teams[0]['id']
-                    all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
-                else:
-                    logger.warning("Не найдено команд для пользователя при создании DM канала")
-                    all_channels = []
+            teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+            all_channels = []
+            
+            if teams:
+                team_id = teams[0]['id']
+                all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+            else:
+                logger.warning("Не найдено команд для пользователя при создании DM канала")
             dm_channels = [ch for ch in all_channels if ch.get('type') == 'D']
             
             # Ищем существующий канал с этим пользователем
@@ -1036,17 +1052,15 @@ class MattermostBot:
         try:
             if not channel_id:
                 # Если канал не указан, попробуем найти любой доступный DM канал
-                try:
-                    channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
-                except TypeError:
-                    # Если нужен team_id, получаем первую команду пользователя
-                    teams = self.driver.teams.get_user_teams(self.bot_user['id'])
-                    if teams:
-                        team_id = teams[0]['id']
-                        channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
-                    else:
-                        logger.error("Не найдено команд для тестирования")
-                        return False
+                teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+                channels = []
+                
+                if teams:
+                    team_id = teams[0]['id']
+                    channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+                else:
+                    logger.error("Не найдено команд для тестирования")
+                    return False
                 
                 dm_channels = [ch for ch in channels if ch.get('type') == 'D']
                 if dm_channels:
