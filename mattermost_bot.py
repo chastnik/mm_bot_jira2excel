@@ -10,6 +10,14 @@ from config import Config
 from jira_client import JiraClient
 from excel_generator import ExcelGenerator
 from user_auth import UserAuthManager
+from date_parser import DateParser
+import threading
+import urllib.parse
+import time
+import urllib3
+
+# Отключаем SSL предупреждения для production среды
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -19,19 +27,29 @@ class MattermostBot:
     def __init__(self):
         """Инициализация бота"""
         self.driver = Driver({
-            'url': Config.MATTERMOST_URL,
+            'url': Config.MATTERMOST_URL.replace('https://', '').replace('http://', ''),
             'token': Config.MATTERMOST_TOKEN,
             'scheme': 'https',
             'port': 443,
-            'basepath': '/api/v4'
+            'basepath': '/api/v4',
+            'verify': Config.MATTERMOST_SSL_VERIFY,
+            'request_timeout': 30,
+            'websocket_kw_args': {
+                'sslopt': {"cert_reqs": None} if not Config.MATTERMOST_SSL_VERIFY else {}
+            }
         })
         
         self.excel_generator = ExcelGenerator()
         self.user_auth = UserAuthManager()  # Управление индивидуальными учетными данными
+        self.date_parser = DateParser()  # Парсер дат в свободном формате
+        self.loop = None  # Будет установлен в connect()
         
     async def connect(self):
         """Подключение к Mattermost"""
         try:
+            # Сохраняем текущий event loop
+            self.loop = asyncio.get_event_loop()
+            
             self.driver.login()
             logger.info("Успешно подключились к Mattermost")
             
@@ -49,23 +67,168 @@ class MattermostBot:
             logger.error(f"Ошибка подключения к Mattermost: {e}")
             raise
     
-    async def start_listening(self):
+    def start_listening(self):
         """Запуск прослушивания сообщений"""
-        try:
-            # Получаем события через WebSocket
-            for response in self.driver.init_websocket(event_handler=self.handle_event):
-                pass
-        except Exception as e:
-            logger.error(f"Ошибка в WebSocket соединении: {e}")
+        if Config.MATTERMOST_USE_WEBSOCKET:
+            try:
+                logger.info("Запускаем WebSocket соединение...")
+                # Запускаем WebSocket синхронно
+                self.driver.init_websocket(event_handler=self.handle_event)
+                logger.info("WebSocket соединение завершено")
+            except Exception as e:
+                logger.error(f"Ошибка в WebSocket соединении: {e}")
+                logger.info("Переключаемся на HTTP polling режим...")
+                self.start_http_polling()
+        else:
+            logger.info("Запускаем HTTP polling режим (WebSocket отключен)...")
+            self.start_http_polling()
     
-    async def handle_event(self, event):
+    def start_http_polling(self):
+        """HTTP polling для получения сообщений"""
+        logger.info("Начинаем HTTP polling для получения сообщений...")
+        logger.info("🔍 Бот готов к поиску новых DM каналов и сообщений")
+        
+        last_check = int(time.time() * 1000)  # Миллисекунды
+        dm_channels_cache = set()  # Кэш найденных DM каналов
+        
+        while True:
+            try:
+                current_time = int(time.time() * 1000)
+                logger.debug(f"Проверка новых сообщений в {current_time}")
+                
+                # Получаем все DM каналы, где участвует бот
+                try:
+                    # Получаем все каналы бота (используем API без team_id для DM каналов)
+                    try:
+                        # Пробуем получить все каналы пользователя
+                        all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
+                    except TypeError:
+                        # Если нужен team_id, используем первую команду (или получаем список команд)
+                        teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+                        if teams:
+                            team_id = teams[0]['id']
+                            logger.debug(f"Используем team_id: {team_id}")
+                            all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+                        else:
+                            logger.warning("Не найдено команд для пользователя")
+                            all_channels = []
+                    
+                    # Фильтруем только DM каналы (тип 'D')
+                    dm_channels = [ch for ch in all_channels if ch.get('type') == 'D']
+                    
+                    # Логируем найденные каналы
+                    current_dm_ids = {ch['id'] for ch in dm_channels}
+                    new_channels = current_dm_ids - dm_channels_cache
+                    
+                    if new_channels:
+                        logger.info(f"🆕 Обнаружено новых DM каналов: {len(new_channels)}")
+                        for channel_id in new_channels:
+                            logger.info(f"   Новый DM канал: {channel_id}")
+                        dm_channels_cache.update(new_channels)
+                    
+                    logger.debug(f"Мониторим {len(dm_channels)} DM каналов...")
+                    
+                    # Проверяем каждый DM канал на новые сообщения
+                    for channel in dm_channels:
+                        channel_id = channel['id']
+                        
+                        try:
+                            # Получаем последние посты в канале
+                            posts_response = self.driver.posts.get_posts_for_channel(channel_id)
+                            
+                            if posts_response and 'posts' in posts_response:
+                                posts = posts_response['posts']
+                                
+                                for post_id, post in posts.items():
+                                    post_time = int(post['create_at'])
+                                    
+                                    # Проверяем новые посты
+                                    if post_time > last_check:
+                                        user_id = post.get('user_id')
+                                        message = post.get('message', '')
+                                        
+                                        # Игнорируем сообщения от бота
+                                        if user_id != self.bot_user['id']:
+                                            logger.info(f"🔥 НОВОЕ СООБЩЕНИЕ! От пользователя {user_id} в канале {channel_id}: '{message[:100]}{'...' if len(message) > 100 else ''}'")
+                                            
+                                            # Обрабатываем команду
+                                            self.handle_message_sync(message, channel_id, user_id)
+                        
+                        except Exception as e:
+                            # Проверяем на ошибку авторизации
+                            if "неверная или истекшая сессия" in str(e).lower() or "unauthorized" in str(e).lower():
+                                logger.warning(f"🔄 Переподключаемся из-за истекшей сессии...")
+                                try:
+                                    self.driver.login()
+                                    logger.info("✅ Переподключение успешно")
+                                except Exception as reconnect_error:
+                                    logger.error(f"❌ Ошибка переподключения: {reconnect_error}")
+                            else:
+                                logger.debug(f"Ошибка проверки канала {channel_id}: {e}")
+                    
+                    # Проверяем подключение к боту
+                    bot_info = self.driver.users.get_user(self.bot_user['id'])
+                    logger.debug(f"Статус бота: {bot_info.get('username', 'unknown')} - активен")
+                    
+                except Exception as e:
+                    # Проверяем на ошибку авторизации
+                    if "неверная или истекшая сессия" in str(e).lower() or "unauthorized" in str(e).lower():
+                        logger.warning(f"🔄 Переподключаемся из-за истекшей сессии...")
+                        try:
+                            self.driver.login()
+                            logger.info("✅ Переподключение успешно")
+                        except Exception as reconnect_error:
+                            logger.error(f"❌ Ошибка переподключения: {reconnect_error}")
+                    else:
+                        logger.error(f"Ошибка получения DM каналов: {e}")
+                
+                last_check = current_time
+                
+                # Пауза между проверками
+                time.sleep(10)
+                
+            except KeyboardInterrupt:
+                logger.info("Получен сигнал остановки HTTP polling")
+                break
+            except Exception as e:
+                logger.error(f"Ошибка в HTTP polling: {e}")
+                time.sleep(15)  # Пауза при ошибке
+    
+    def handle_post_sync(self, post):
+        """Синхронная обработка поста из HTTP polling"""
+        try:
+            logger.debug(f"Обрабатываем пост: {post.get('id', 'unknown')}")
+            
+            # Игнорируем сообщения от самого бота
+            if post.get('user_id') == self.bot_user['id']:
+                logger.debug("Игнорируем сообщение от самого бота")
+                return
+            
+            # Обрабатываем только прямые сообщения боту
+            message = post.get('message', '').strip()
+            channel_id = post.get('channel_id')
+            user_id = post.get('user_id')
+            
+            logger.info(f"Пост от пользователя {user_id}: '{message[:50]}...' в канале {channel_id}")
+            
+            # Проверяем что это прямое сообщение
+            if self._is_direct_message(channel_id):
+                logger.info(f"Обрабатываем DM сообщение от пользователя {user_id}")
+                self.handle_message_sync(message, channel_id, user_id)
+            else:
+                logger.debug(f"Канал {channel_id} не является прямым сообщением")
+                
+        except Exception as e:
+            logger.error(f"Ошибка обработки поста: {e}")
+    
+    def handle_event(self, event):
         """Обработка событий из Mattermost"""
         try:
             event_type = event.get('event')
             
             # Обрабатываем создание новых DM каналов
             if event_type == 'channel_created':
-                await self._handle_channel_created(event)
+                self._handle_channel_created_sync(event)
             
             # Обрабатываем сообщения
             elif event_type == 'posted':
@@ -82,20 +245,31 @@ class MattermostBot:
                 
                 # Проверяем что это прямое сообщение
                 if self._is_direct_message(channel_id):
-                    logger.info(f"Получено сообщение от пользователя {user_id} в канале {channel_id}")
-                    await self.handle_message(message, channel_id, user_id)
+                    logger.info(f"🔥 WEBSOCKET: Получено сообщение от пользователя {user_id} в канале {channel_id}")
+                    self.handle_message_sync(message, channel_id, user_id)
                 else:
                     # Логируем, что бот не отвечает в каналах
                     logger.debug(f"Игнорируем сообщение в канале {channel_id}: бот работает только в прямых сообщениях")
             
             # Обрабатываем добавление пользователей в каналы (включая DM)
             elif event_type == 'user_added':
-                await self._handle_user_added(event)
+                self._handle_user_added_sync(event)
+            
+            # Обрабатываем события пользователей (может помочь при создании новых DM)
+            elif event_type == 'hello':
+                logger.info("🔄 WebSocket подключение установлено")
+            
+            elif event_type == 'status_change':
+                # Игнорируем изменения статуса
+                pass
+                
+            else:
+                logger.debug(f"Получено неизвестное событие: {event_type}")
                     
         except Exception as e:
             logger.error(f"Ошибка обработки события: {e}")
             
-    async def _handle_channel_created(self, event):
+    def _handle_channel_created_sync(self, event):
         """Обработка создания нового канала"""
         try:
             channel_data = json.loads(event.get('data', '{}'))
@@ -108,7 +282,7 @@ class MattermostBot:
         except Exception as e:
             logger.error(f"Ошибка обработки создания канала: {e}")
     
-    async def _handle_user_added(self, event):
+    def _handle_user_added_sync(self, event):
         """Обработка добавления пользователя в канал"""
         try:
             broadcast = event.get('broadcast', {})
@@ -140,38 +314,61 @@ class MattermostBot:
             logger.error(f"Ошибка проверки типа канала {channel_id}: {e}")
             return False
     
-    async def handle_message(self, message: str, channel_id: str, user_id: str):
+    def handle_message_sync(self, message: str, channel_id: str, user_id: str):
         """Обработка сообщения пользователя"""
         try:
-            message = message.lower().strip()
+            logger.info(f"📝 Обрабатываем сообщение от {user_id}: '{message[:50]}{'...' if len(message) > 50 else ''}'")
+            
+            # Получаем информацию о пользователе для логирования
+            try:
+                user_info = self.driver.users.get_user(user_id)
+                username = user_info.get('username', 'unknown')
+                logger.info(f"👤 Пользователь: {username} (ID: {user_id})")
+            except Exception as e:
+                logger.debug(f"Не удалось получить информацию о пользователе {user_id}: {e}")
+                username = 'unknown'
+            
+            # Проверяем, что это действительно DM канал
+            if not self._is_direct_message(channel_id):
+                logger.warning(f"⚠️ Сообщение получено в не-DM канале {channel_id}, игнорируем")
+                return
+            
+            message_lower = message.lower().strip()
             
             # Команды бота
-            if any(cmd in message for cmd in ['помощь', 'help', 'команды']):
-                await self.send_help(channel_id)
+            if any(cmd in message_lower for cmd in ['помощь', 'help', 'команды']):
+                logger.info(f"🔍 Команда 'помощь' от пользователя {username}")
+                self.send_help_sync(channel_id)
             
-            elif any(cmd in message for cmd in ['настройка', 'подключение', 'авторизация']):
-                await self.start_jira_auth(channel_id, user_id)
+            elif any(cmd in message_lower for cmd in ['настройка', 'подключение', 'авторизация']):
+                logger.info(f"🔐 Команда 'настройка' от пользователя {username}")
+                self.start_jira_auth_sync(channel_id, user_id)
             
-            elif any(cmd in message for cmd in ['проекты', 'список проектов']):
-                await self.send_projects_list(channel_id, user_id)
+            elif any(cmd in message_lower for cmd in ['проекты', 'список проектов']):
+                logger.info(f"📋 Команда 'проекты' от пользователя {username}")
+                self.send_projects_list_sync(channel_id, user_id)
             
-            elif 'отчет' in message or 'трудозатраты' in message:
-                await self.start_report_generation(channel_id, user_id)
+            elif 'отчет' in message_lower or 'трудозатраты' in message_lower:
+                logger.info(f"📊 Команда 'отчет' от пользователя {username}")
+                self.start_report_generation_sync(channel_id, user_id)
             
-            elif 'сброс' in message or 'очистить' in message:
-                await self.reset_user_auth(channel_id, user_id)
+            elif 'сброс' in message_lower or 'очистить' in message_lower:
+                logger.info(f"🗑️ Команда 'сброс' от пользователя {username}")
+                self.reset_user_auth_sync(channel_id, user_id)
             
             elif self.user_auth.get_user_session(user_id):
-                await self.handle_session_input(message, channel_id, user_id)
+                logger.info(f"📊 Обработка ввода сессии от пользователя {username}")
+                self.handle_session_input_sync(message, channel_id, user_id)
             
             else:
-                await self.send_unknown_command(channel_id)
+                logger.info(f"❓ Неизвестная команда от пользователя {username}: '{message[:30]}...'")
+                self.send_unknown_command_sync(channel_id)
                 
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}")
-            await self.send_error_message(channel_id, "Произошла ошибка при обработке команды")
+            self.send_error_message_sync(channel_id, "Произошла ошибка при обработке команды")
     
-    async def send_help(self, channel_id: str):
+    def send_help_sync(self, channel_id: str):
         """Отправка справки по командам"""
         help_text = """
 **Бот для выгрузки трудозатрат из Jira** 📊
@@ -194,7 +391,15 @@ class MattermostBot:
 4. Укажите период (начальную и конечную дату)
 5. Получите Excel файл с трудозатратами
 
-**Формат дат:** YYYY-MM-DD (например: 2024-01-15)
+**📅 Указание периода (в свободном формате):**
+• `прошлая неделя`, `эта неделя`
+• `прошлый месяц`, `этот месяц` 
+• `май`, `июнь 2024`
+• `с мая по июнь`
+• `с 15 мая по 20 июня`
+• `последние 7 дней`, `последние 2 недели`
+• `2024-01-01` (один день)
+• `с 2024-01-01 по 2024-01-31`
 
 **Безопасность:**
 • Каждый пользователь подключается под своим аккаунтом Jira
@@ -206,9 +411,9 @@ class MattermostBot:
 • Данные сортируются по дате и включают статистику по каждому проекту
 • Поддерживается неограниченное количество проектов в одном отчете
         """
-        await self.send_message(channel_id, help_text)
+        self.send_message_sync(channel_id, help_text)
     
-    async def start_jira_auth(self, channel_id: str, user_id: str):
+    def start_jira_auth_sync(self, channel_id: str, user_id: str):
         """Начало процесса аутентификации в Jira"""
         try:
             # Проверяем, есть ли уже аутентификация
@@ -221,7 +426,7 @@ class MattermostBot:
 
 Чтобы изменить учетные данные, введите команду `сброс`, а затем `настройка` заново.
                 """
-                await self.send_message(channel_id, message)
+                self.send_message_sync(channel_id, message)
                 return
             
             # Запрашиваем имя пользователя
@@ -232,7 +437,7 @@ class MattermostBot:
 
 **Пример:** john.doe или john_doe
             """
-            await self.send_message(channel_id, message)
+            self.send_message_sync(channel_id, message)
             
             # Сохраняем состояние ожидания имени пользователя
             self.user_auth.update_user_session(user_id, 
@@ -242,9 +447,9 @@ class MattermostBot:
             
         except Exception as e:
             logger.error(f"Ошибка начала аутентификации: {e}")
-            await self.send_error_message(channel_id, "Ошибка инициализации настройки")
+            self.send_error_message_sync(channel_id, "Ошибка инициализации настройки")
     
-    async def reset_user_auth(self, channel_id: str, user_id: str):
+    def reset_user_auth_sync(self, channel_id: str, user_id: str):
         """Сброс аутентификации пользователя"""
         try:
             self.user_auth.remove_user_credentials(user_id)
@@ -255,18 +460,18 @@ class MattermostBot:
 
 Для повторного подключения введите команду `настройка`.
             """
-            await self.send_message(channel_id, message)
+            self.send_message_sync(channel_id, message)
             
         except Exception as e:
             logger.error(f"Ошибка сброса аутентификации: {e}")
-            await self.send_error_message(channel_id, "Ошибка сброса данных")
+            self.send_error_message_sync(channel_id, "Ошибка сброса данных")
     
-    async def send_projects_list(self, channel_id: str, user_id: str):
+    def send_projects_list_sync(self, channel_id: str, user_id: str):
         """Отправка списка проектов"""
         try:
             # Проверяем аутентификацию пользователя
             if not self.user_auth.is_user_authenticated(user_id):
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     "❌ **Требуется подключение к Jira**\n\n"
                     "Введите команду `настройка` для подключения к вашему аккаунту Jira.")
                 return
@@ -279,7 +484,7 @@ class MattermostBot:
             projects = jira_client.get_projects()
             
             if not projects:
-                await self.send_message(channel_id, "❌ Не удалось получить список проектов")
+                self.send_message_sync(channel_id, "❌ Не удалось получить список проектов")
                 return
             
             projects_text = "**Доступные проекты:**\n\n"
@@ -289,18 +494,18 @@ class MattermostBot:
             if len(projects) > 20:
                 projects_text += f"\n... и еще {len(projects) - 20} проектов"
             
-            await self.send_message(channel_id, projects_text)
+            self.send_message_sync(channel_id, projects_text)
             
         except Exception as e:
             logger.error(f"Ошибка получения списка проектов: {e}")
-            await self.send_error_message(channel_id, "Ошибка получения списка проектов")
+            self.send_error_message_sync(channel_id, "Ошибка получения списка проектов")
     
-    async def start_report_generation(self, channel_id: str, user_id: str):
+    def start_report_generation_sync(self, channel_id: str, user_id: str):
         """Начало процесса генерации отчета"""
         try:
             # Проверяем аутентификацию пользователя
             if not self.user_auth.is_user_authenticated(user_id):
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     "❌ **Требуется подключение к Jira**\n\n"
                     "Введите команду `настройка` для подключения к вашему аккаунту Jira.")
                 return
@@ -311,7 +516,7 @@ class MattermostBot:
                 channel_id=channel_id
             )
             
-            await self.send_message(channel_id, 
+            self.send_message_sync(channel_id, 
                 "📋 **Генерация отчета по трудозатратам**\n\n"
                 "Введите ключ проекта или несколько ключей через запятую:\n"
                 "• Один проект: `PROJ`\n"
@@ -320,9 +525,9 @@ class MattermostBot:
             )
         except Exception as e:
             logger.error(f"Ошибка начала генерации отчета: {e}")
-            await self.send_error_message(channel_id, "Ошибка инициализации генерации отчета")
+            self.send_error_message_sync(channel_id, "Ошибка инициализации генерации отчета")
     
-    async def handle_session_input(self, message: str, channel_id: str, user_id: str):
+    def handle_session_input_sync(self, message: str, channel_id: str, user_id: str):
         """Обработка ввода в рамках сессии пользователя"""
         try:
             session = self.user_auth.get_user_session(user_id)
@@ -330,16 +535,16 @@ class MattermostBot:
             
             # Обработка аутентификации
             if step == 'waiting_username':
-                await self._handle_username_input(message, channel_id, user_id)
+                self._handle_username_input_sync(message, channel_id, user_id)
                 return
             elif step == 'waiting_password':
-                await self._handle_password_input(message, channel_id, user_id)
+                self._handle_password_input_sync(message, channel_id, user_id)
                 return
         
             # Генерация отчета
             if step == 'project_selection':
                 if 'проекты' in message:
-                    await self.send_projects_list(channel_id, user_id)
+                    self.send_projects_list_sync(channel_id, user_id)
                     return
                 
                 # Получаем учетные данные пользователя
@@ -350,82 +555,95 @@ class MattermostBot:
                 project_keys = [key.strip().upper() for key in message.split(',')]
                 projects = jira_client.get_projects()
             
-            # Проверяем все указанные проекты
-            selected_projects = []
-            invalid_projects = []
-            
-            for project_key in project_keys:
-                project = next((p for p in projects if p['key'] == project_key), None)
-                if project:
-                    selected_projects.append(project)
-                else:
-                    invalid_projects.append(project_key)
-            
-            # Если есть несуществующие проекты
-            if invalid_projects:
-                await self.send_message(channel_id, 
-                    f"❌ Проекты не найдены: `{', '.join(invalid_projects)}`\n"
-                    f"Введите корректные ключи проектов или `проекты` для просмотра списка.")
-                return
-            
-            # Если не выбран ни один проект
-            if not selected_projects:
-                await self.send_message(channel_id, 
-                    "❌ Не указан ни один проект. Введите ключ проекта или `проекты` для просмотра списка.")
-                return
-            
+                # Проверяем все указанные проекты
+                selected_projects = []
+                invalid_projects = []
+                
+                for project_key in project_keys:
+                    project = next((p for p in projects if p['key'] == project_key), None)
+                    if project:
+                        selected_projects.append(project)
+                    else:
+                        invalid_projects.append(project_key)
+                
+                # Если есть несуществующие проекты
+                if invalid_projects:
+                    self.send_message_sync(channel_id, 
+                        f"❌ Проекты не найдены: `{', '.join(invalid_projects)}`\n"
+                        f"Введите корректные ключи проектов или `проекты` для просмотра списка.")
+                    return
+                
+                # Если не выбран ни один проект
+                if not selected_projects:
+                    self.send_message_sync(channel_id, 
+                        "❌ Не указан ни один проект. Введите ключ проекта или `проекты` для просмотра списка.")
+                    return
+                
                 self.user_auth.update_user_session(user_id,
                     projects=selected_projects,
-                    step='start_date'
+                    step='date_period'
                 )
-            
-            # Формируем сообщение о выбранных проектах
-            if len(selected_projects) == 1:
-                projects_text = f"**{selected_projects[0]['name']}** ({selected_projects[0]['key']})"
-            else:
-                projects_list = [f"• **{p['name']}** ({p['key']})" for p in selected_projects]
-                projects_text = f"{len(selected_projects)} проектов:\n" + "\n".join(projects_list)
-            
-            await self.send_message(channel_id, 
-                f"✅ Выбрано {projects_text}\n\n"
-                "Введите дату начала периода в формате YYYY-MM-DD (например: 2024-01-01):"
-            )
+                
+                # Формируем сообщение о выбранных проектах
+                if len(selected_projects) == 1:
+                    projects_text = f"**{selected_projects[0]['name']}** ({selected_projects[0]['key']})"
+                else:
+                    projects_list = [f"• **{p['name']}** ({p['key']})" for p in selected_projects]
+                    projects_text = f"{len(selected_projects)} проектов:\n" + "\n".join(projects_list)
+                
+                help_text = """
+**Примеры периодов:**
+• `прошлая неделя` или `эта неделя`
+• `прошлый месяц` или `этот месяц`  
+• `май` или `июнь 2024`
+• `с мая по июнь`
+• `с 15 мая по 20 июня`
+• `последние 7 дней`
+• `последние 2 недели`
+• `2024-01-01` (один день)
+• `с 2024-01-01 по 2024-01-31`
+
+**Или стандартный формат:** YYYY-MM-DD"""
+                
+                self.send_message_sync(channel_id, 
+                    f"✅ Выбрано {projects_text}\n\n"
+                    "📅 **Укажите период для отчета:**\n"
+                    f"{help_text}"
+                )
         
-            elif step == 'start_date':
-                if not self._validate_date(message):
-                    await self.send_message(channel_id, 
-                        "❌ Некорректный формат даты. Используйте формат YYYY-MM-DD (например: 2024-01-01)")
+            elif step == 'date_period':
+                # Парсим период с помощью нового парсера
+                start_date, end_date, explanation = self.date_parser.parse_period(message)
+                
+                if not start_date or not end_date:
+                    # Показываем ошибку и примеры
+                    help_text = """
+**Попробуйте один из примеров:**
+• `прошлая неделя` - за прошлую неделю
+• `этот месяц` - текущий месяц
+• `май 2024` - май конкретного года  
+• `с мая по июнь` - период между месяцами
+• `последние 7 дней` - последняя неделя
+• `2024-01-01` - конкретный день
+• `с 2024-01-01 по 2024-01-31` - точный период"""
+                    
+                    self.send_message_sync(channel_id, 
+                        f"{explanation}\n\n{help_text}")
                     return
                 
+                # Сохраняем распознанные даты
                 self.user_auth.update_user_session(user_id,
-                    start_date=message.strip(),
-                    step='end_date'
+                    start_date=start_date,
+                    end_date=end_date
                 )
-                await self.send_message(channel_id, 
-                    f"✅ Дата начала: {message}\n\n"
-                    "Введите дату окончания периода в формате YYYY-MM-DD:"
-                )
-        
-            elif step == 'end_date':
-                if not self._validate_date(message):
-                    await self.send_message(channel_id, 
-                        "❌ Некорректный формат даты. Используйте формат YYYY-MM-DD")
-                    return
                 
-                end_date = message.strip()
+                # Показываем что распознали и генерируем отчет
+                self.send_message_sync(channel_id, explanation)
                 
-                # Проверяем, что дата окончания не раньше даты начала
-                if end_date < session.get('start_date', ''):
-                    await self.send_message(channel_id, 
-                        "❌ Дата окончания не может быть раньше даты начала")
-                    return
-                
-                # Добавляем конечную дату в сессию
-                self.user_auth.update_user_session(user_id, end_date=end_date)
                 session = self.user_auth.get_user_session(user_id)  # Получаем обновленную сессию
                 
                 # Генерируем отчет
-                await self.generate_and_send_report(session, user_id)
+                self.generate_and_send_report_sync(session, user_id)
                 
                 # Очищаем сессию
                 self.user_auth.update_user_session(user_id, 
@@ -433,16 +651,16 @@ class MattermostBot:
         
         except Exception as e:
             logger.error(f"Ошибка обработки сессии: {e}")
-            await self.send_error_message(channel_id, "Ошибка обработки команды")
+            self.send_error_message_sync(channel_id, "Ошибка обработки команды")
     
-    async def _handle_username_input(self, username: str, channel_id: str, user_id: str):
+    def _handle_username_input_sync(self, username: str, channel_id: str, user_id: str):
         """Обработка ввода имени пользователя для аутентификации"""
         try:
             username = username.strip()
             
             # Простая валидация имени пользователя
             if not username or len(username) < 2:
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     "❌ Введите корректное имя пользователя (минимум 2 символа).")
                 return
             
@@ -462,13 +680,13 @@ class MattermostBot:
 - Пароль будет сохранен в зашифрованном виде
 - Никто не сможет увидеть ваш пароль в открытом виде
             """
-            await self.send_message(channel_id, message)
+            self.send_message_sync(channel_id, message)
             
         except Exception as e:
             logger.error(f"Ошибка обработки имени пользователя: {e}")
-            await self.send_error_message(channel_id, "Ошибка обработки имени пользователя")
+            self.send_error_message_sync(channel_id, "Ошибка обработки имени пользователя")
     
-    async def _handle_password_input(self, password: str, channel_id: str, user_id: str):
+    def _handle_password_input_sync(self, password: str, channel_id: str, user_id: str):
         """Обработка ввода пароля"""
         try:
             password = password.strip()
@@ -478,14 +696,14 @@ class MattermostBot:
             username = session.get('temp_username')
             
             if not username:
-                await self.send_message(channel_id, "❌ Ошибка: имя пользователя не найдено. Начните заново с команды `настройка`")
+                self.send_message_sync(channel_id, "❌ Ошибка: имя пользователя не найдено. Начните заново с команды `настройка`")
                 return
             
             if not password:
-                await self.send_message(channel_id, "❌ Пароль не может быть пустым. Введите ваш пароль.")
+                self.send_message_sync(channel_id, "❌ Пароль не может быть пустым. Введите ваш пароль.")
                 return
             
-            await self.send_message(channel_id, "🔄 Проверяю подключение к Jira...")
+            self.send_message_sync(channel_id, "🔄 Проверяю подключение к Jira...")
             
             # Тестируем подключение
             jira_client = JiraClient()
@@ -501,7 +719,7 @@ class MattermostBot:
                     step=None
                 )
                 
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     f"✅ **Подключение к Jira установлено!**\n\n"
                     f"{message}\n\n"
                     f"Теперь вы можете использовать:\n"
@@ -509,7 +727,7 @@ class MattermostBot:
                     f"• `отчет` - генерация отчета по трудозатратам"
                 )
             else:
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     f"❌ **Ошибка подключения**\n\n"
                     f"{message}\n\n"
                     f"Проверьте правильность имени пользователя и пароля, затем попробуйте снова."
@@ -517,7 +735,7 @@ class MattermostBot:
             
         except Exception as e:
             logger.error(f"Ошибка обработки пароля: {e}")
-            await self.send_error_message(channel_id, "Ошибка обработки пароля")
+            self.send_error_message_sync(channel_id, "Ошибка обработки пароля")
     
     def _validate_date(self, date_str: str) -> bool:
         """Валидация формата даты"""
@@ -527,7 +745,7 @@ class MattermostBot:
         except ValueError:
             return False
     
-    async def generate_and_send_report(self, session: Dict, user_id: str):
+    def generate_and_send_report_sync(self, session: Dict, user_id: str):
         """Генерация и отправка отчета"""
         try:
             channel_id = session['channel_id']
@@ -535,7 +753,7 @@ class MattermostBot:
             start_date = session['start_date']
             end_date = session['end_date']
             
-            await self.send_message(channel_id, 
+            self.send_message_sync(channel_id, 
                 "⏳ Генерирую отчет... Это может занять некоторое время.")
             
             # Получаем учетные данные пользователя
@@ -564,7 +782,7 @@ class MattermostBot:
             
             if not all_worklogs:
                 projects_names = [p['name'] for p in projects]
-                await self.send_message(channel_id, 
+                self.send_message_sync(channel_id, 
                     f"📭 Трудозатраты по проектам **{', '.join(projects_names)}** "
                     f"за период с {start_date} по {end_date} не найдены."
                 )
@@ -600,7 +818,7 @@ class MattermostBot:
                     stats_text += f"• **{stat['name']}** ({stat['key']}): {stat['records']} записей, {stat['hours']:.1f} ч\n"
             
             # Отправляем файл
-            await self.send_file(channel_id, excel_data, filename, 
+            self.send_file_sync(channel_id, excel_data, filename, 
                 f"📊 **Отчет по трудозатратам готов!**\n\n"
                 f"**Проекты:** {', '.join([p['name'] for p in projects])}\n"
                 f"**Период:** с {start_date} по {end_date}\n"
@@ -611,20 +829,37 @@ class MattermostBot:
             
         except Exception as e:
             logger.error(f"Ошибка генерации отчета: {e}")
-            await self.send_error_message(session['channel_id'], 
+            self.send_error_message_sync(session['channel_id'], 
                 "Произошла ошибка при генерации отчета")
     
-    async def send_message(self, channel_id: str, message: str):
+    def send_message_sync(self, channel_id: str, message: str):
         """Отправка сообщения в канал"""
         try:
+            # Ограничиваем длину сообщения (лимит Mattermost ~16384 символа)
+            max_length = 15000
+            if len(message) > max_length:
+                # Обрезаем сообщение и добавляем предупреждение
+                truncated_message = message[:max_length-200] + "\n\n⚠️ **Сообщение обрезано из-за ограничений длины**"
+                logger.warning(f"Сообщение обрезано с {len(message)} до {len(truncated_message)} символов")
+                message = truncated_message
+            
             self.driver.posts.create_post({
                 'channel_id': channel_id,
                 'message': message
             })
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения: {e}")
+            # Попытка отправить короткое сообщение об ошибке
+            try:
+                error_msg = f"❌ Произошла ошибка при отправке сообщения.\n\nОшибка: {str(e)[:200]}..."
+                self.driver.posts.create_post({
+                    'channel_id': channel_id,
+                    'message': error_msg
+                })
+            except:
+                logger.error("Не удалось отправить даже сообщение об ошибке")
     
-    async def send_file(self, channel_id: str, file_data: bytes, filename: str, message: str = ""):
+    def send_file_sync(self, channel_id: str, file_data: bytes, filename: str, message: str = ""):
         """Отправка файла в канал"""
         try:
             # Загружаем файл
@@ -644,16 +879,25 @@ class MattermostBot:
             
         except Exception as e:
             logger.error(f"Ошибка отправки файла: {e}")
-            await self.send_error_message(channel_id, "Ошибка отправки файла")
+            self.send_error_message_sync(channel_id, "Ошибка отправки файла")
     
-    async def send_error_message(self, channel_id: str, error_msg: str):
+    def send_error_message_sync(self, channel_id: str, error_msg: str):
         """Отправка сообщения об ошибке"""
-        await self.send_message(channel_id, f"❌ **Ошибка:** {error_msg}")
+        self.send_message_sync(channel_id, f"❌ **Ошибка:** {error_msg}")
     
-    async def send_unknown_command(self, channel_id: str):
+    def send_unknown_command_sync(self, channel_id: str):
         """Отправка сообщения о неизвестной команде"""
-        await self.send_message(channel_id, 
-            "❓ Неизвестная команда. Введите `помощь` для просмотра доступных команд.")
+        message = """
+❓ **Не понимаю команду**
+
+**Попробуйте:**
+• `помощь` - список всех команд
+• `настройка` - подключение к Jira
+• `отчет` - создать отчет по трудозатратам
+
+**Для новых пользователей:** начните с команды `настройка`
+        """
+        self.send_message_sync(channel_id, message)
     
     def disconnect(self):
         """Отключение от Mattermost"""
@@ -699,4 +943,125 @@ class MattermostBot:
             
         except Exception as e:
             logger.error(f"Ошибка проверки доступа к каналу {channel_id}: {e}")
+            return False
+    
+    def create_or_get_dm_channel(self, user_id: str):
+        """Создает или получает DM канал с пользователем"""
+        try:
+            logger.info(f"🔍 Ищем/создаем DM канал с пользователем {user_id}...")
+            
+            # Сначала проверяем, существует ли уже DM канал
+            try:
+                all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
+            except TypeError:
+                # Если нужен team_id, получаем первую команду пользователя
+                teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+                if teams:
+                    team_id = teams[0]['id']
+                    all_channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+                else:
+                    logger.warning("Не найдено команд для пользователя при создании DM канала")
+                    all_channels = []
+            dm_channels = [ch for ch in all_channels if ch.get('type') == 'D']
+            
+            # Ищем существующий канал с этим пользователем
+            for channel in dm_channels:
+                channel_id = channel['id']
+                try:
+                    # Получаем участников канала
+                    members = self.driver.channels.get_channel_members(channel_id)
+                    member_ids = {member['user_id'] for member in members}
+                    
+                    # Проверяем, что в канале только бот и указанный пользователь
+                    if user_id in member_ids and self.bot_user['id'] in member_ids and len(member_ids) == 2:
+                        logger.info(f"✅ Найден существующий DM канал: {channel_id}")
+                        return channel_id
+                        
+                except Exception as e:
+                    logger.debug(f"Ошибка проверки канала {channel_id}: {e}")
+                    continue
+            
+            # Если не найден, создаем новый DM канал
+            logger.info(f"📱 Создаем новый DM канал с пользователем {user_id}...")
+            
+            dm_channel = self.driver.channels.create_direct_message_channel([self.bot_user['id'], user_id])
+            channel_id = dm_channel['id']
+            
+            logger.info(f"✅ Создан новый DM канал: {channel_id}")
+            
+            # Отправляем приветственное сообщение
+            welcome_message = """
+🤖 **Добро пожаловать!**
+
+Я бот для выгрузки трудозатрат из Jira в Excel формат.
+
+**Для начала работы введите:** `настройка`
+
+**Или посмотрите справку:** `помощь`
+            """
+            self.send_message_sync(channel_id, welcome_message)
+            
+            return channel_id
+            
+        except Exception as e:
+            logger.error(f"Ошибка создания DM канала с пользователем {user_id}: {e}")
+            return None
+    
+    def connect_sync(self):
+        """Подключение к Mattermost (синхронная версия)"""
+        try:
+            self.driver.login()
+            logger.info("Успешно подключились к Mattermost")
+            
+            # Получаем информацию о боте
+            self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
+            if not self.bot_user:
+                self.bot_user = self.driver.users.get_user('me')
+            
+            logger.info(f"Бот запущен как: {self.bot_user['username']}")
+            
+            # Проверяем сохраненные пользователи
+            authenticated_users = self.user_auth.get_authenticated_users_count()
+            if authenticated_users > 0:
+                logger.info(f"Загружено {authenticated_users} аутентифицированных пользователей")
+            else:
+                logger.info("Нет аутентифицированных пользователей")
+            
+        except Exception as e:
+            logger.error(f"Ошибка подключения к Mattermost: {e}")
+            raise 
+    
+    def test_send_message(self, channel_id=None, message=None):
+        """Тестовая функция для отправки сообщения"""
+        try:
+            if not channel_id:
+                # Если канал не указан, попробуем найти любой доступный DM канал
+                try:
+                    channels = self.driver.channels.get_channels_for_user(self.bot_user['id'])
+                except TypeError:
+                    # Если нужен team_id, получаем первую команду пользователя
+                    teams = self.driver.teams.get_user_teams(self.bot_user['id'])
+                    if teams:
+                        team_id = teams[0]['id']
+                        channels = self.driver.channels.get_channels_for_user(self.bot_user['id'], team_id)
+                    else:
+                        logger.error("Не найдено команд для тестирования")
+                        return False
+                
+                dm_channels = [ch for ch in channels if ch.get('type') == 'D']
+                if dm_channels:
+                    channel_id = dm_channels[0]['id']
+                else:
+                    logger.error("Не найдено DM каналов для тестирования")
+                    return False
+            
+            if not message:
+                message = "🤖 **ТЕСТОВОЕ СООБЩЕНИЕ**\n\nБот работает и может отправлять сообщения!\nВремя: " + str(time.time())
+            
+            self.send_message_sync(channel_id, message)
+            logger.info(f"✅ Тестовое сообщение успешно отправлено в канал {channel_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки тестового сообщения: {e}")
             return False 

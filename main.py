@@ -3,12 +3,16 @@
 Бот для Mattermost с интеграцией Jira для выгрузки трудозатрат
 """
 
-import asyncio
 import logging
 import signal
 import sys
+import time
+import urllib3
 from config import Config
 from mattermost_bot import MattermostBot
+
+# Отключаем SSL предупреждения для production среды
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,7 +33,7 @@ class BotManager:
         self.bot = None
         self.running = False
     
-    async def start(self):
+    def start(self):
         """Запуск бота"""
         try:
             # Проверяем конфигурацию
@@ -38,22 +42,22 @@ class BotManager:
             
             # Создаем и запускаем бота
             self.bot = MattermostBot()
-            await self.bot.connect()
+            self.bot.connect_sync()
             
             logger.info("Бот успешно запущен и готов к работе")
             self.running = True
             
             # Запускаем прослушивание сообщений
-            await self.bot.start_listening()
+            self.bot.start_listening()
             
         except KeyboardInterrupt:
             logger.info("Получен сигнал остановки")
         except Exception as e:
             logger.error(f"Критическая ошибка: {e}")
         finally:
-            await self.stop()
+            self.stop()
     
-    async def stop(self):
+    def stop(self):
         """Остановка бота"""
         if self.bot:
             logger.info("Останавливаем бота...")
@@ -68,9 +72,9 @@ def signal_handler(signum, frame):
     """Обработчик сигналов для корректного завершения"""
     logger.info(f"Получен сигнал {signum}")
     if bot_manager:
-        asyncio.create_task(bot_manager.stop())
+        bot_manager.stop()
 
-async def main():
+def main():
     """Главная функция"""
     global bot_manager
     
@@ -79,11 +83,11 @@ async def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     bot_manager = BotManager()
-    await bot_manager.start()
+    bot_manager.start()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Прерывание с клавиатуры")
     except Exception as e:

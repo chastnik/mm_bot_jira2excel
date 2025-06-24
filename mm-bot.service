@@ -1,0 +1,34 @@
+[Unit]
+Description=Mattermost-Jira Bot
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mmbot
+Group=mmbot
+WorkingDirectory=/opt/mm_bot_jira
+ExecStart=/opt/mm_bot_jira/start_bot.sh
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=30
+
+# Ограничения безопасности
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mm_bot_jira
+
+# Переменные окружения
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/opt/mm_bot_jira"
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mm-bot
+
+[Install]
+WantedBy=multi-user.target 

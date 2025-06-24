@@ -10,6 +10,8 @@ class Config:
     MATTERMOST_URL = os.getenv('MATTERMOST_URL')
     MATTERMOST_TOKEN = os.getenv('MATTERMOST_TOKEN')
     MATTERMOST_TEAM_ID = os.getenv('MATTERMOST_TEAM_ID')
+    MATTERMOST_SSL_VERIFY = os.getenv('MATTERMOST_SSL_VERIFY', 'true').lower() == 'true'
+    MATTERMOST_USE_WEBSOCKET = os.getenv('MATTERMOST_USE_WEBSOCKET', 'true').lower() == 'true'
     
     # Jira настройки (только URL, учетные данные индивидуальные)
     JIRA_URL = os.getenv('JIRA_URL')
