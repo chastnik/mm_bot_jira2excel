@@ -9,31 +9,31 @@ logger = logging.getLogger(__name__)
 class JiraClient:
     """Клиент для работы с Jira API с индивидуальными учетными данными"""
     
-    def __init__(self, email: str = None, api_token: str = None):
+    def __init__(self, username: str = None, password: str = None):
         """
         Инициализация клиента Jira с индивидуальными учетными данными
         
         Args:
-            email: Email пользователя для аутентификации в Jira
-            api_token: API токен пользователя для Jira
+            username: Имя пользователя для аутентификации в Jira
+            password: Пароль пользователя для Jira
         """
         self.jira = None
-        if email and api_token:
-            self._connect(email, api_token)
+        if username and password:
+            self._connect(username, password)
     
-    def _connect(self, email: str, api_token: str):
+    def _connect(self, username: str, password: str):
         """Подключение к Jira с указанными учетными данными"""
         try:
             self.jira = JIRA(
                 server=Config.JIRA_URL,
-                basic_auth=(email, api_token)
+                basic_auth=(username, password)
             )
-            logger.info(f"Успешно подключились к Jira для пользователя {email}")
+            logger.info(f"Успешно подключились к Jira для пользователя {username}")
         except Exception as e:
-            logger.error(f"Ошибка подключения к Jira для {email}: {e}")
+            logger.error(f"Ошибка подключения к Jira для {username}: {e}")
             raise
     
-    def test_connection(self, email: str, api_token: str) -> tuple[bool, str]:
+    def test_connection(self, username: str, password: str) -> tuple[bool, str]:
         """
         Проверить соединение с Jira для указанных учетных данных
         
@@ -43,7 +43,7 @@ class JiraClient:
         try:
             test_jira = JIRA(
                 server=Config.JIRA_URL,
-                basic_auth=(email, api_token)
+                basic_auth=(username, password)
             )
             user = test_jira.current_user()
             logger.info(f"Тестовое подключение к Jira успешно для: {user}")

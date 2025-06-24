@@ -213,30 +213,30 @@ class MattermostBot:
         try:
             # Проверяем, есть ли уже аутентификация
             if self.user_auth.is_user_authenticated(user_id):
-                email, _ = self.user_auth.get_user_credentials(user_id)
+                username, _ = self.user_auth.get_user_credentials(user_id)
                 message = f"""
 ✅ **Вы уже подключены к Jira**
 
-**Текущий аккаунт:** {email}
+**Текущий пользователь:** {username}
 
 Чтобы изменить учетные данные, введите команду `сброс`, а затем `настройка` заново.
                 """
                 await self.send_message(channel_id, message)
                 return
             
-            # Запрашиваем email
+            # Запрашиваем имя пользователя
             message = """
 🔐 **Настройка подключения к Jira**
 
-**Шаг 1 из 2:** Введите ваш email для подключения к Jira
+**Шаг 1 из 2:** Введите ваше имя пользователя для подключения к Jira
 
-**Пример:** user@company.com
+**Пример:** john.doe или john_doe
             """
             await self.send_message(channel_id, message)
             
-            # Сохраняем состояние ожидания email
+            # Сохраняем состояние ожидания имени пользователя
             self.user_auth.update_user_session(user_id, 
-                step='waiting_email',
+                step='waiting_username',
                 channel_id=channel_id
             )
             
@@ -272,10 +272,10 @@ class MattermostBot:
                 return
             
             # Получаем учетные данные пользователя
-            email, token = self.user_auth.get_user_credentials(user_id)
+            username, password = self.user_auth.get_user_credentials(user_id)
             
             # Создаем Jira клиент для пользователя
-            jira_client = JiraClient(email, token)
+            jira_client = JiraClient(username, password)
             projects = jira_client.get_projects()
             
             if not projects:
@@ -329,11 +329,11 @@ class MattermostBot:
             step = session.get('step')
             
             # Обработка аутентификации
-            if step == 'waiting_email':
-                await self._handle_email_input(message, channel_id, user_id)
+            if step == 'waiting_username':
+                await self._handle_username_input(message, channel_id, user_id)
                 return
-            elif step == 'waiting_token':
-                await self._handle_token_input(message, channel_id, user_id)
+            elif step == 'waiting_password':
+                await self._handle_password_input(message, channel_id, user_id)
                 return
         
             # Генерация отчета
@@ -343,8 +343,8 @@ class MattermostBot:
                     return
                 
                 # Получаем учетные данные пользователя
-                email, token = self.user_auth.get_user_credentials(user_id)
-                jira_client = JiraClient(email, token)
+                username, password = self.user_auth.get_user_credentials(user_id)
+                jira_client = JiraClient(username, password)
                 
                 # Обрабатываем несколько проектов через запятую
                 project_keys = [key.strip().upper() for key in message.split(',')]
@@ -435,68 +435,69 @@ class MattermostBot:
             logger.error(f"Ошибка обработки сессии: {e}")
             await self.send_error_message(channel_id, "Ошибка обработки команды")
     
-    async def _handle_email_input(self, email: str, channel_id: str, user_id: str):
-        """Обработка ввода email для аутентификации"""
+    async def _handle_username_input(self, username: str, channel_id: str, user_id: str):
+        """Обработка ввода имени пользователя для аутентификации"""
         try:
-            email = email.strip()
+            username = username.strip()
             
-            # Простая валидация email
-            if '@' not in email or '.' not in email:
+            # Простая валидация имени пользователя
+            if not username or len(username) < 2:
                 await self.send_message(channel_id, 
-                    "❌ Некорректный формат email. Введите корректный email адрес.")
+                    "❌ Введите корректное имя пользователя (минимум 2 символа).")
                 return
             
-            # Сохраняем email и переходим к следующему шагу
+            # Сохраняем имя пользователя и переходим к следующему шагу
             self.user_auth.update_user_session(user_id,
-                temp_email=email,
-                step='waiting_token'
+                temp_username=username,
+                step='waiting_password'
             )
             
             message = """
-✅ **Email сохранен**
+✅ **Имя пользователя сохранено**
 
-**Шаг 2 из 2:** Введите ваш API токен для Jira
+**Шаг 2 из 2:** Введите ваш пароль для Jira
 
-**Как получить токен:**
-1. Войдите в Jira под своей учетной записью
-2. Перейдите в **Account Settings** → **Security** → **API tokens**
-3. Нажмите **Create API token**
-4. Скопируйте сгенерированный токен и введите его здесь
-
-**Важно:** Токен будет сохранен в зашифрованном виде
+**Важно:** 
+- Используйте ваш обычный пароль от Jira
+- Пароль будет сохранен в зашифрованном виде
+- Никто не сможет увидеть ваш пароль в открытом виде
             """
             await self.send_message(channel_id, message)
             
         except Exception as e:
-            logger.error(f"Ошибка обработки email: {e}")
-            await self.send_error_message(channel_id, "Ошибка обработки email")
+            logger.error(f"Ошибка обработки имени пользователя: {e}")
+            await self.send_error_message(channel_id, "Ошибка обработки имени пользователя")
     
-    async def _handle_token_input(self, token: str, channel_id: str, user_id: str):
-        """Обработка ввода API токена"""
+    async def _handle_password_input(self, password: str, channel_id: str, user_id: str):
+        """Обработка ввода пароля"""
         try:
-            token = token.strip()
+            password = password.strip()
             
-            # Получаем временно сохраненный email
+            # Получаем временно сохраненное имя пользователя
             session = self.user_auth.get_user_session(user_id)
-            email = session.get('temp_email')
+            username = session.get('temp_username')
             
-            if not email:
-                await self.send_message(channel_id, "❌ Ошибка: email не найден. Начните заново с команды `настройка`")
+            if not username:
+                await self.send_message(channel_id, "❌ Ошибка: имя пользователя не найдено. Начните заново с команды `настройка`")
+                return
+            
+            if not password:
+                await self.send_message(channel_id, "❌ Пароль не может быть пустым. Введите ваш пароль.")
                 return
             
             await self.send_message(channel_id, "🔄 Проверяю подключение к Jira...")
             
             # Тестируем подключение
             jira_client = JiraClient()
-            success, message = jira_client.test_connection(email, token)
+            success, message = jira_client.test_connection(username, password)
             
             if success:
                 # Сохраняем учетные данные
-                self.user_auth.save_user_credentials(user_id, email, token)
+                self.user_auth.save_user_credentials(user_id, username, password)
                 
                 # Очищаем временные данные
                 self.user_auth.update_user_session(user_id,
-                    temp_email=None,
+                    temp_username=None,
                     step=None
                 )
                 
@@ -511,12 +512,12 @@ class MattermostBot:
                 await self.send_message(channel_id, 
                     f"❌ **Ошибка подключения**\n\n"
                     f"{message}\n\n"
-                    f"Проверьте правильность email и API токена, затем попробуйте снова."
+                    f"Проверьте правильность имени пользователя и пароля, затем попробуйте снова."
                 )
             
         except Exception as e:
-            logger.error(f"Ошибка обработки токена: {e}")
-            await self.send_error_message(channel_id, "Ошибка обработки токена")
+            logger.error(f"Ошибка обработки пароля: {e}")
+            await self.send_error_message(channel_id, "Ошибка обработки пароля")
     
     def _validate_date(self, date_str: str) -> bool:
         """Валидация формата даты"""
@@ -538,8 +539,8 @@ class MattermostBot:
                 "⏳ Генерирую отчет... Это может занять некоторое время.")
             
             # Получаем учетные данные пользователя
-            email, token = self.user_auth.get_user_credentials(user_id)
-            jira_client = JiraClient(email, token)
+            username, password = self.user_auth.get_user_credentials(user_id)
+            jira_client = JiraClient(username, password)
             
             # Получаем трудозатраты из Jira для всех проектов
             all_worklogs = []

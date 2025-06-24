@@ -31,8 +31,8 @@ def test_user_auth():
         
         # Тестовые пользователи
         test_users = [
-            {"id": "user1", "email": "test1@example.com", "token": "fake_token_1"},
-            {"id": "user2", "email": "test2@example.com", "token": "fake_token_2"},
+            {"id": "user1", "username": "test_user1", "password": "fake_password_1"},
+            {"id": "user2", "username": "test_user2", "password": "fake_password_2"},
         ]
         
         # Тест 1: Проверка изначального состояния
@@ -46,7 +46,7 @@ def test_user_auth():
         # Тест 2: Сохранение учетных данных
         print("📋 Тест 2: Сохранение учетных данных")
         for user in test_users:
-            auth_manager.save_user_credentials(user["id"], user["email"], user["token"])
+            auth_manager.save_user_credentials(user["id"], user["username"], user["password"])
             print(f"  ✅ Сохранены данные для {user['id']}")
         
         print(f"  Всего аутентифицированных: {auth_manager.get_authenticated_users_count()}\n")
@@ -54,9 +54,9 @@ def test_user_auth():
         # Тест 3: Получение учетных данных
         print("📋 Тест 3: Получение учетных данных")
         for user in test_users:
-            email, token = auth_manager.get_user_credentials(user["id"])
-            if email and token:
-                print(f"  ✅ {user['id']}: email={email}, token={'*' * len(token)}")
+            username, password = auth_manager.get_user_credentials(user["id"])
+            if username and password:
+                print(f"  ✅ {user['id']}: username={username}, password={'*' * len(password)}")
             else:
                 print(f"  ❌ {user['id']}: учетные данные не найдены")
         print()
@@ -86,15 +86,15 @@ def test_user_auth():
         try:
             with open('user_sessions.json', 'r') as f:
                 content = f.read()
-                if 'test2@example.com' in content:
-                    print("  ❌ Email найден в открытом виде в файле!")
+                if 'test_user2' in content:
+                    print("  ❌ Имя пользователя найдено в открытом виде в файле!")
                 else:
-                    print("  ✅ Email не найден в открытом виде - данные зашифрованы")
+                    print("  ✅ Имя пользователя не найдено в открытом виде - данные зашифрованы")
                     
-                if 'fake_token' in content:
-                    print("  ❌ Токен найден в открытом виде в файле!")
+                if 'fake_password' in content:
+                    print("  ❌ Пароль найден в открытом виде в файле!")
                 else:
-                    print("  ✅ Токен не найден в открытом виде - данные зашифрованы")
+                    print("  ✅ Пароль не найден в открытом виде - данные зашифрованы")
         except FileNotFoundError:
             print("  ℹ️  Файл сессий не найден")
         print()
@@ -103,19 +103,19 @@ def test_user_auth():
         if len(sys.argv) > 1 and sys.argv[1] == "--real-test":
             print("📋 Реальный тест подключения к Jira")
             
-            email = input("Введите ваш email для Jira: ").strip()
-            token = input("Введите ваш API токен: ").strip()
+            username = input("Введите ваше имя пользователя для Jira: ").strip()
+            password = input("Введите ваш пароль: ").strip()
             
-            if email and token:
+            if username and password:
                 print("🔄 Тестируем подключение...")
                 jira_client = JiraClient()
-                success, message = jira_client.test_connection(email, token)
+                success, message = jira_client.test_connection(username, password)
                 
                 if success:
                     print(f"✅ {message}")
                     
                     # Тестируем создание клиента с учетными данными
-                    jira_client_auth = JiraClient(email, token)
+                    jira_client_auth = JiraClient(username, password)
                     projects = jira_client_auth.get_projects()
                     print(f"✅ Получено {len(projects)} проектов")
                     
@@ -126,7 +126,7 @@ def test_user_auth():
                 else:
                     print(f"❌ {message}")
             else:
-                print("❌ Не введены email или токен")
+                print("❌ Не введены имя пользователя или пароль")
         
         print("\n🎉 Все тесты завершены!")
         
@@ -145,7 +145,8 @@ def cleanup():
 
 if __name__ == "__main__":
     print("Запуск тестов индивидуальной аутентификации")
-    print("Для реального теста подключения к Jira используйте: python test_user_auth.py --real-test\n")
+    print("Для реального теста подключения к Jira используйте: python test_user_auth.py --real-test")
+    print("(будет запрошено имя пользователя и пароль для Jira)\n")
     
     try:
         test_user_auth()

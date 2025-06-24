@@ -69,17 +69,17 @@ class UserAuthManager:
     def is_user_authenticated(self, user_id):
         """Проверка, аутентифицирован ли пользователь в Jira"""
         user_session = self._sessions.get(user_id, {})
-        return bool(user_session.get('jira_email') and user_session.get('jira_token'))
+        return bool(user_session.get('jira_username') and user_session.get('jira_password'))
     
-    def save_user_credentials(self, user_id, email, api_token):
+    def save_user_credentials(self, user_id, username, password):
         """Сохранение учетных данных пользователя"""
         if user_id not in self._sessions:
             self._sessions[user_id] = {}
         
         # Шифруем чувствительные данные
         self._sessions[user_id].update({
-            'jira_email': self._encrypt_data(email),
-            'jira_token': self._encrypt_data(api_token),
+            'jira_username': self._encrypt_data(username),
+            'jira_password': self._encrypt_data(password),
             'authenticated': True
         })
         
@@ -94,9 +94,9 @@ class UserAuthManager:
             return None, None
         
         try:
-            email = self._decrypt_data(user_session['jira_email'])
-            token = self._decrypt_data(user_session['jira_token'])
-            return email, token
+            username = self._decrypt_data(user_session['jira_username'])
+            password = self._decrypt_data(user_session['jira_password'])
+            return username, password
         except Exception as e:
             logger.error(f"Ошибка расшифровки учетных данных для пользователя {user_id}: {e}")
             return None, None
@@ -104,8 +104,8 @@ class UserAuthManager:
     def remove_user_credentials(self, user_id):
         """Удаление учетных данных пользователя"""
         if user_id in self._sessions:
-            self._sessions[user_id].pop('jira_email', None)
-            self._sessions[user_id].pop('jira_token', None)
+            self._sessions[user_id].pop('jira_username', None)
+            self._sessions[user_id].pop('jira_password', None)
             self._sessions[user_id]['authenticated'] = False
             self._save_sessions()
             logger.info(f"Учетные данные Jira удалены для пользователя {user_id}")
