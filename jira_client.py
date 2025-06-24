@@ -7,22 +7,58 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 class JiraClient:
-    """Клиент для работы с Jira API"""
+    """Клиент для работы с Jira API с индивидуальными учетными данными"""
     
-    def __init__(self):
-        """Инициализация клиента Jira"""
+    def __init__(self, email: str = None, api_token: str = None):
+        """
+        Инициализация клиента Jira с индивидуальными учетными данными
+        
+        Args:
+            email: Email пользователя для аутентификации в Jira
+            api_token: API токен пользователя для Jira
+        """
+        self.jira = None
+        if email and api_token:
+            self._connect(email, api_token)
+    
+    def _connect(self, email: str, api_token: str):
+        """Подключение к Jira с указанными учетными данными"""
         try:
             self.jira = JIRA(
                 server=Config.JIRA_URL,
-                basic_auth=(Config.JIRA_EMAIL, Config.JIRA_API_TOKEN)
+                basic_auth=(email, api_token)
             )
-            logger.info("Успешно подключились к Jira")
+            logger.info(f"Успешно подключились к Jira для пользователя {email}")
         except Exception as e:
-            logger.error(f"Ошибка подключения к Jira: {e}")
+            logger.error(f"Ошибка подключения к Jira для {email}: {e}")
             raise
+    
+    def test_connection(self, email: str, api_token: str) -> tuple[bool, str]:
+        """
+        Проверить соединение с Jira для указанных учетных данных
+        
+        Returns:
+            tuple: (успешно, сообщение)
+        """
+        try:
+            test_jira = JIRA(
+                server=Config.JIRA_URL,
+                basic_auth=(email, api_token)
+            )
+            user = test_jira.current_user()
+            logger.info(f"Тестовое подключение к Jira успешно для: {user}")
+            return True, f"Успешно! Подключен как: {user}"
+        except Exception as e:
+            error_msg = f"Ошибка подключения к Jira: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
     
     def get_projects(self) -> List[Dict]:
         """Получить список доступных проектов"""
+        if not self.jira:
+            logger.error("Jira клиент не инициализирован")
+            return []
+            
         try:
             projects = self.jira.projects()
             return [{"key": p.key, "name": p.name} for p in projects]
@@ -42,6 +78,10 @@ class JiraClient:
         Returns:
             Список словарей с данными о трудозатратах
         """
+        if not self.jira:
+            logger.error("Jira клиент не инициализирован")
+            return []
+            
         try:
             # JQL запрос для поиска задач проекта с worklog в указанном периоде
             jql = f'project = {project_key} AND worklogDate >= "{start_date}" AND worklogDate <= "{end_date}"'
@@ -94,8 +134,12 @@ class JiraClient:
             logger.error(f"Ошибка получения трудозатрат: {e}")
             return []
     
-    def test_connection(self) -> bool:
-        """Проверить соединение с Jira"""
+    def test_current_connection(self) -> bool:
+        """Проверить текущее соединение с Jira"""
+        if not self.jira:
+            logger.error("Jira клиент не инициализирован")
+            return False
+            
         try:
             user = self.jira.current_user()
             logger.info(f"Подключен к Jira как: {user}")

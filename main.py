@@ -40,11 +40,6 @@ class BotManager:
             self.bot = MattermostBot()
             await self.bot.connect()
             
-            # Тестируем подключение к Jira
-            if not self.bot.jira_client.test_connection():
-                logger.error("Не удалось подключиться к Jira")
-                return
-            
             logger.info("Бот успешно запущен и готов к работе")
             self.running = True
             

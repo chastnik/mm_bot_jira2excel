@@ -11,10 +11,8 @@ class Config:
     MATTERMOST_TOKEN = os.getenv('MATTERMOST_TOKEN')
     MATTERMOST_TEAM_ID = os.getenv('MATTERMOST_TEAM_ID')
     
-    # Jira настройки
+    # Jira настройки (только URL, учетные данные индивидуальные)
     JIRA_URL = os.getenv('JIRA_URL')
-    JIRA_EMAIL = os.getenv('JIRA_EMAIL')
-    JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
     
     # Настройки бота
     BOT_NAME = os.getenv('BOT_NAME', 'jira-timesheet-bot')
@@ -25,7 +23,7 @@ class Config:
         """Проверка что все необходимые настройки заданы"""
         required_vars = [
             'MATTERMOST_URL', 'MATTERMOST_TOKEN', 'MATTERMOST_TEAM_ID',
-            'JIRA_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'
+            'JIRA_URL'
         ]
         
         missing_vars = []
