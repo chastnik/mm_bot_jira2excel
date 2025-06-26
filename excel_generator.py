@@ -1,5 +1,5 @@
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.styles import Font, Alignment, Border, Side, NamedStyle
 from openpyxl.utils import get_column_letter
 from typing import List, Dict
 import logging
@@ -12,24 +12,26 @@ class ExcelGenerator:
     """Генератор Excel отчетов с трудозатратами"""
     
     def __init__(self):
-        self.headers = [
-            "Дата работы",
-            "Исполнитель", 
-            "Часы",
-            "Содержание работы",
-            "Проектная задача",
-            "Проект"
+        # Порядок колонок согласно шаблону
+        self.column_order = [
+            "date",         # Дата работы
+            "executor",     # Исполнитель
+            "hours",        # Часы
+            "description",  # Содержание работы
+            "project_task", # Проектная задача
+            "project"       # Проект
         ]
     
     def generate_timesheet_report(self, worklogs: List[Dict], project_name: str, start_date: str, end_date: str, projects: List[Dict] = None) -> bytes:
         """
-        Генерировать Excel отчет с трудозатратами
+        Генерировать Excel отчет с трудозатратами согласно шаблону
         
         Args:
             worklogs: Список данных о трудозатратах
             project_name: Название проекта
             start_date: Дата начала периода
             end_date: Дата окончания периода
+            projects: Список проектов (для сводного отчета)
             
         Returns:
             Байты Excel файла
@@ -40,104 +42,47 @@ class ExcelGenerator:
             ws = wb.active
             ws.title = f"Трудозатраты {project_name}"
             
-            # Заголовок отчета  
-            if projects and len(projects) > 1:
-                report_title = f"Сводный отчет по трудозатратам ({len(projects)} проектов) с {start_date} по {end_date}"
-            else:
-                report_title = f"Отчет по трудозатратам проекта '{project_name}' с {start_date} по {end_date}"
+            # Добавляем строку заголовков (первая строка) начиная с колонки A
+            ws.cell(row=1, column=1, value="Дата работы")       # A1
+            ws.cell(row=1, column=2, value="Исполнитель")       # B1  
+            ws.cell(row=1, column=3, value="Часы")              # C1
+            ws.cell(row=1, column=4, value="Содержание работы") # D1
+            ws.cell(row=1, column=5, value="Проектная задача")  # E1
+            ws.cell(row=1, column=6, value="Проект")            # F1
             
-            ws.merge_cells('A1:F1')
-            ws['A1'] = report_title
-            ws['A1'].font = Font(bold=True, size=14)
-            ws['A1'].alignment = Alignment(horizontal='center')
-            
-            # Добавляем информацию о проектах для сводного отчета
-            if projects and len(projects) > 1:
-                ws.merge_cells('A2:F2')
-                project_list = ', '.join([f"{p['name']} ({p['key']})" for p in projects])
-                ws['A2'] = f"Проекты: {project_list}"
-                ws['A2'].font = Font(size=10)
-                ws['A2'].alignment = Alignment(horizontal='center')
-                header_row = 4
-            else:
-                header_row = 3
-            
-            # Заголовки столбцов
-            for col, header in enumerate(self.headers, 1):
-                cell = ws.cell(row=header_row, column=col, value=header)
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center')
-                cell.border = Border(
-                    top=Side(style='thin'),
-                    bottom=Side(style='thin'),
-                    left=Side(style='thin'),
-                    right=Side(style='thin')
-                )
-            
-            # Заполняем данными
-            data_start_row = header_row + 1
-            for row, worklog in enumerate(worklogs, data_start_row):
-                ws.cell(row=row, column=1, value=worklog['date'])
-                ws.cell(row=row, column=2, value=worklog['executor'])
-                ws.cell(row=row, column=3, value=worklog['hours'])
-                ws.cell(row=row, column=4, value=worklog['description'])
-                ws.cell(row=row, column=5, value=worklog['project_task'])
-                ws.cell(row=row, column=6, value=worklog['project'])
+            # Заполняем данными начиная со второй строки
+            for row, worklog in enumerate(worklogs, 2):  # Начинаем со второй строки
+                # Парсим дату из строки и записываем как текст в формате DD.MM.YYYY HH:MM:SS
+                try:
+                    # Парсим дату в формате "2025-6-18 14:30"
+                    date_obj = datetime.strptime(worklog['date'], '%Y-%m-%d %H:%M')
+                    # Форматируем как текст в российском формате
+                    formatted_date = date_obj.strftime('%d.%m.%Y %H:%M:%S')
+                    date_cell = ws.cell(row=row, column=1, value=formatted_date)
+                    # Явно устанавливаем формат ячейки как "Общий" (текст)
+                    date_cell.number_format = 'General'
+                except ValueError:
+                    # Если не удалось распарсить, записываем как есть
+                    date_cell = ws.cell(row=row, column=1, value=worklog['date'])
+                    date_cell.number_format = 'General'
                 
-                # Добавляем границы к ячейкам
-                for col in range(1, 7):
-                    cell = ws.cell(row=row, column=col)
-                    cell.border = Border(
-                        top=Side(style='thin'),
-                        bottom=Side(style='thin'),
-                        left=Side(style='thin'),
-                        right=Side(style='thin')
-                    )
+                ws.cell(row=row, column=2, value=worklog['executor'])    # B - Исполнитель
+                ws.cell(row=row, column=3, value=worklog['hours'])       # C - Часы
+                ws.cell(row=row, column=4, value=worklog['description']) # D - Содержание работы
+                ws.cell(row=row, column=5, value=worklog['project_task'])# E - Проектная задача
+                ws.cell(row=row, column=6, value=worklog['project'])     # F - Проект
             
             # Автоширина столбцов
-            for col in range(1, 7):
+            for col in range(1, 7):  # A-F
                 column_letter = get_column_letter(col)
                 ws.column_dimensions[column_letter].width = self._get_column_width(col)
-            
-            # Итоговая строка с общим количеством часов
-            if worklogs:
-                total_hours = sum(float(w['hours'].replace(',', '.')) for w in worklogs)
-                total_row = data_start_row + len(worklogs) + 1
-                ws.merge_cells(f'A{total_row}:B{total_row}')
-                ws[f'A{total_row}'] = 'Итого часов:'
-                ws[f'A{total_row}'].font = Font(bold=True)
-                ws[f'C{total_row}'] = str(total_hours).replace('.', ',')
-                ws[f'C{total_row}'].font = Font(bold=True)
-                
-                # Добавляем статистику по проектам для сводного отчета
-                if projects and len(projects) > 1:
-                    stats_row = total_row + 2
-                    ws.merge_cells(f'A{stats_row}:F{stats_row}')
-                    ws[f'A{stats_row}'] = 'Статистика по проектам:'
-                    ws[f'A{stats_row}'].font = Font(bold=True, size=12)
-                    
-                    # Группируем данные по проектам
-                    project_stats = {}
-                    for worklog in worklogs:
-                        project_name = worklog['project']
-                        if project_name not in project_stats:
-                            project_stats[project_name] = {'records': 0, 'hours': 0.0}
-                        project_stats[project_name]['records'] += 1
-                        project_stats[project_name]['hours'] += float(worklog['hours'].replace(',', '.'))
-                    
-                    # Выводим статистику
-                    for i, (project_name, stats) in enumerate(project_stats.items(), 1):
-                        stat_row = stats_row + i
-                        ws[f'A{stat_row}'] = f"• {project_name}:"
-                        ws[f'B{stat_row}'] = f"{stats['records']} записей"
-                        ws[f'C{stat_row}'] = str(stats['hours']).replace('.', ',') + " ч"
             
             # Сохраняем в память
             excel_buffer = io.BytesIO()
             wb.save(excel_buffer)
             excel_buffer.seek(0)
             
-            logger.info(f"Сгенерирован Excel отчет с {len(worklogs)} записями")
+            logger.info(f"Сгенерирован Excel отчет по шаблону с заголовками и {len(worklogs)} записями")
             return excel_buffer.getvalue()
             
         except Exception as e:
@@ -147,12 +92,12 @@ class ExcelGenerator:
     def _get_column_width(self, column_index: int) -> int:
         """Получить оптимальную ширину столбца"""
         widths = {
-            1: 20,  # Дата работы
-            2: 15,  # Исполнитель
-            3: 10,  # Часы
-            4: 50,  # Содержание работы
-            5: 25,  # Проектная задача
-            6: 20   # Проект
+            1: 20,  # A - Дата работы
+            2: 15,  # B - Исполнитель
+            3: 10,  # C - Часы
+            4: 50,  # D - Содержание работы
+            5: 25,  # E - Проектная задача
+            6: 20   # F - Проект
         }
         return widths.get(column_index, 15)
     
