@@ -1,7 +1,7 @@
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, NamedStyle
 from openpyxl.utils import get_column_letter
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 from datetime import datetime
 import io
@@ -19,10 +19,11 @@ class ExcelGenerator:
             "hours",        # Часы
             "description",  # Содержание работы
             "project_task", # Проектная задача
-            "project"       # Проект
+            "project",      # Проект
+            "task_summary"  # Задача в Jira
         ]
     
-    def generate_timesheet_report(self, worklogs: List[Dict], project_name: str, start_date: str, end_date: str, projects: List[Dict] = None) -> bytes:
+    def generate_timesheet_report(self, worklogs: List[Dict], project_name: str, start_date: str, end_date: str, projects: Optional[List[Dict]] = None) -> bytes:
         """
         Генерировать Excel отчет с трудозатратами согласно шаблону
         
@@ -40,6 +41,8 @@ class ExcelGenerator:
             # Создаем новую книгу
             wb = Workbook()
             ws = wb.active
+            if ws is None:
+                raise ValueError("Не удалось создать рабочий лист")
             ws.title = f"Трудозатраты {project_name}"
             
             # Добавляем строку заголовков (первая строка) начиная с колонки A
@@ -49,6 +52,7 @@ class ExcelGenerator:
             ws.cell(row=1, column=4, value="Содержание работы") # D1
             ws.cell(row=1, column=5, value="Проектная задача")  # E1
             ws.cell(row=1, column=6, value="Проект")            # F1
+            ws.cell(row=1, column=7, value="Задача в Jira")     # G1
             
             # Заполняем данными начиная со второй строки
             for row, worklog in enumerate(worklogs, 2):  # Начинаем со второй строки
@@ -71,9 +75,10 @@ class ExcelGenerator:
                 ws.cell(row=row, column=4, value=worklog['description']) # D - Содержание работы
                 ws.cell(row=row, column=5, value=worklog['project_task'])# E - Проектная задача
                 ws.cell(row=row, column=6, value=worklog['project'])     # F - Проект
+                ws.cell(row=row, column=7, value=worklog['task_summary'])# G - Задача в Jira
             
             # Автоширина столбцов
-            for col in range(1, 7):  # A-F
+            for col in range(1, 8):  # A-G
                 column_letter = get_column_letter(col)
                 ws.column_dimensions[column_letter].width = self._get_column_width(col)
             
@@ -97,7 +102,8 @@ class ExcelGenerator:
             3: 10,  # C - Часы
             4: 50,  # D - Содержание работы
             5: 25,  # E - Проектная задача
-            6: 20   # F - Проект
+            6: 20,  # F - Проект
+            7: 30   # G - Задача в Jira
         }
         return widths.get(column_index, 15)
     

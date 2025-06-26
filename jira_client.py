@@ -116,8 +116,10 @@ class JiraClient:
                         }
                         month_name = month_names.get(worklog_date.month, f"Месяц {worklog_date.month}")
                         
-                        # Формируем описание с номером тикета и темой
+                        # Получаем тему задачи для отдельного столбца
                         issue_summary = issue.fields.summary if hasattr(issue.fields, 'summary') else "Без темы"
+                        
+                        # Формируем описание работы в формате "Номер задачи - Тема задачи: Состав работ"
                         if worklog.comment:
                             ticket_description = f"{issue.key} - {issue_summary}: {worklog.comment}"
                         else:
@@ -129,6 +131,7 @@ class JiraClient:
                             'hours': str(hours).replace('.', ','),  # Заменяем точку на запятую для Excel
                             'description': ticket_description,
                             'project_task': f'Сопровождение {month_name}',
+                            'task_summary': issue_summary,  # Тема задачи в отдельном столбце
                             'project': issue.fields.project.name
                         }
                         
