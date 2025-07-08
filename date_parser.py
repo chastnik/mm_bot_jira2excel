@@ -30,7 +30,13 @@ class DateParser:
     }
     
     def __init__(self):
-        self.today = datetime.now()
+        # Убираем кеширование даты - будем вычислять при каждом запросе
+        pass
+    
+    @property
+    def today(self):
+        """Возвращает актуальную текущую дату при каждом обращении"""
+        return datetime.now()
         
     def parse_period(self, text: str) -> Tuple[Optional[str], Optional[str], str]:
         """
@@ -62,6 +68,8 @@ class DateParser:
             (r'прошл(?:ая|ой|ую)\s+недел[ияею]', self._get_last_week),
             (r'эт(?:от|ому|им)\s+месяц[еау]?', self._get_this_month),
             (r'прошл(?:ый|ого|ому)\s+месяц[еау]?', self._get_last_month),
+            (r'эт(?:от|ому|им|ом)\s+квартал[еауо]?', self._get_this_quarter),
+            (r'прошл(?:ый|ого|ому|ом)\s+квартал[еауо]?', self._get_last_quarter),
             (r'эт(?:от|ому|им)\s+год[уа]?', self._get_this_year),
             (r'прошл(?:ый|ого|ому)\s+год[уа]?', self._get_last_year),
         ]
@@ -74,6 +82,11 @@ class DateParser:
         month_period = self._parse_month_period(text)
         if month_period[0]:
             return month_period
+            
+        # Конкретные кварталы типа "2 квартал 2024", "первый квартал"
+        quarter_period = self._parse_specific_quarter(text)
+        if quarter_period[0]:
+            return quarter_period
             
         # Период типа "последние N дней/недель/месяцев"
         last_period = self._parse_last_period(text)
@@ -178,6 +191,126 @@ class DateParser:
         return (first_day.strftime('%Y-%m-%d'),
                 last_day.strftime('%Y-%m-%d'),
                 f"✅ Прошлый год: с {first_day.strftime('%Y-%m-%d')} по {last_day.strftime('%Y-%m-%d')}")
+    
+    def _get_this_quarter(self) -> Tuple[str, str, str]:
+        """Текущий квартал"""
+        current_month = self.today.month
+        current_year = self.today.year
+        
+        # Определяем квартал по месяцу
+        if current_month <= 3:  # Q1: январь-март
+            quarter_start = datetime(current_year, 1, 1)
+            quarter_end = datetime(current_year, 3, 31)
+            quarter_name = "I"
+        elif current_month <= 6:  # Q2: апрель-июнь
+            quarter_start = datetime(current_year, 4, 1)
+            quarter_end = datetime(current_year, 6, 30)
+            quarter_name = "II"
+        elif current_month <= 9:  # Q3: июль-сентябрь
+            quarter_start = datetime(current_year, 7, 1)
+            quarter_end = datetime(current_year, 9, 30)
+            quarter_name = "III"
+        else:  # Q4: октябрь-декабрь
+            quarter_start = datetime(current_year, 10, 1)
+            quarter_end = datetime(current_year, 12, 31)
+            quarter_name = "IV"
+        
+        return (quarter_start.strftime('%Y-%m-%d'),
+                quarter_end.strftime('%Y-%m-%d'),
+                f"✅ Текущий квартал ({quarter_name} кв. {current_year}): с {quarter_start.strftime('%Y-%m-%d')} по {quarter_end.strftime('%Y-%m-%d')}")
+    
+    def _get_last_quarter(self) -> Tuple[str, str, str]:
+        """Прошлый квартал"""
+        current_month = self.today.month
+        current_year = self.today.year
+        
+        # Определяем прошлый квартал
+        if current_month <= 3:  # Текущий Q1, прошлый Q4 прошлого года
+            quarter_start = datetime(current_year - 1, 10, 1)
+            quarter_end = datetime(current_year - 1, 12, 31)
+            quarter_name = "IV"
+            quarter_year = current_year - 1
+        elif current_month <= 6:  # Текущий Q2, прошлый Q1
+            quarter_start = datetime(current_year, 1, 1)
+            quarter_end = datetime(current_year, 3, 31)
+            quarter_name = "I"
+            quarter_year = current_year
+        elif current_month <= 9:  # Текущий Q3, прошлый Q2
+            quarter_start = datetime(current_year, 4, 1)
+            quarter_end = datetime(current_year, 6, 30)
+            quarter_name = "II"
+            quarter_year = current_year
+        else:  # Текущий Q4, прошлый Q3
+            quarter_start = datetime(current_year, 7, 1)
+            quarter_end = datetime(current_year, 9, 30)
+            quarter_name = "III"
+            quarter_year = current_year
+        
+        return (quarter_start.strftime('%Y-%m-%d'),
+                quarter_end.strftime('%Y-%m-%d'),
+                f"✅ Прошлый квартал ({quarter_name} кв. {quarter_year}): с {quarter_start.strftime('%Y-%m-%d')} по {quarter_end.strftime('%Y-%m-%d')}")
+    
+    def _parse_specific_quarter(self, text: str) -> Tuple[Optional[str], Optional[str], str]:
+        """Парсит конкретные кварталы типа '2 квартал 2024', 'первый квартал'"""
+        
+        # Словарь для перевода в номер квартала
+        quarter_numbers = {
+            # Цифры
+            '1': 1, '2': 2, '3': 3, '4': 4,
+            # С дефисом
+            '1-й': 1, '2-й': 2, '3-й': 3, '4-й': 4,
+            # Римские цифры
+            'i': 1, 'ii': 2, 'iii': 3, 'iv': 4,
+            # Словами
+            'первый': 1, 'второй': 2, 'третий': 3, 'четвертый': 4,
+            'первого': 1, 'второго': 2, 'третьего': 3, 'четвертого': 4,
+        }
+        
+        # Паттерны для поиска кварталов
+        patterns = [
+            # "2 квартал 2024", "первый квартал 2024"  
+            r'(\w+(?:-\w+)?)\s+квартал[еауо]?\s+(\d{4})',
+            # "2 квартал", "первый квартал" (без года)
+            r'(\w+(?:-\w+)?)\s+квартал[еауо]?(?:\s|$)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                quarter_str = match.group(1).lower()
+                year_str = match.group(2) if len(match.groups()) >= 2 else None
+                
+                # Получаем номер квартала
+                quarter_num = quarter_numbers.get(quarter_str)
+                if not quarter_num:
+                    continue
+                
+                # Определяем год
+                year = int(year_str) if year_str else self.today.year
+                
+                # Вычисляем даты квартала
+                if quarter_num == 1:  # Q1: январь-март
+                    quarter_start = datetime(year, 1, 1)
+                    quarter_end = datetime(year, 3, 31)
+                    quarter_name = "I"
+                elif quarter_num == 2:  # Q2: апрель-июнь
+                    quarter_start = datetime(year, 4, 1)
+                    quarter_end = datetime(year, 6, 30)
+                    quarter_name = "II"
+                elif quarter_num == 3:  # Q3: июль-сентябрь
+                    quarter_start = datetime(year, 7, 1)
+                    quarter_end = datetime(year, 9, 30)
+                    quarter_name = "III"
+                else:  # Q4: октябрь-декабрь
+                    quarter_start = datetime(year, 10, 1)
+                    quarter_end = datetime(year, 12, 31)
+                    quarter_name = "IV"
+                
+                return (quarter_start.strftime('%Y-%m-%d'),
+                        quarter_end.strftime('%Y-%m-%d'),
+                        f"✅ {quarter_name} квартал {year}: с {quarter_start.strftime('%Y-%m-%d')} по {quarter_end.strftime('%Y-%m-%d')}")
+        
+        return None, None, ""
     
     def _parse_month_period(self, text: str) -> Tuple[Optional[str], Optional[str], str]:
         """Парсит периоды типа 'май', 'июнь 2024', 'с мая по июнь'"""
@@ -302,6 +435,10 @@ def test_date_parser():
         "прошлая неделя",
         "этот месяц",
         "прошлый месяц",
+        "этот квартал",
+        "прошлый квартал",
+        "2 квартал 2024",
+        "первый квартал",
         "май",
         "июнь 2024",
         "с мая по июнь",
