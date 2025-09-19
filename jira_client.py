@@ -2,6 +2,8 @@ from jira import JIRA
 from datetime import datetime, timedelta
 import logging
 from typing import List, Dict, Optional
+import re
+from decimal import Decimal, ROUND_HALF_UP
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -105,8 +107,11 @@ class JiraClient:
                         author_email = worklog.author.emailAddress if hasattr(worklog.author, 'emailAddress') else worklog.author.name
                         author_name = author_email.split('@')[0] if '@' in author_email else author_email
                         
-                        # Получаем часы (timeSpentSeconds переводим в часы)
-                        hours = round(worklog.timeSpentSeconds / 3600, 1)
+                        # Получаем часы (timeSpentSeconds переводим в часы) с точностью до сотых
+                        # Используем Decimal, чтобы избежать проблем двоичной точности и лишнего округления
+                        hours_decimal = (Decimal(worklog.timeSpentSeconds) / Decimal(3600)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                        # Убираем незначащие нули (например, 1.50 -> 1.5), но сохраняем 2 знака, если они значимы (например, 0.25)
+                        hours_str = format(hours_decimal.normalize(), 'f')
                         
                         # Формируем месяц для проектной задачи
                         month_names = {
@@ -125,12 +130,24 @@ class JiraClient:
                         else:
                             ticket_description = f"{issue.key} - {issue_summary}"
                         
+                        # Определяем название проектной задачи:
+                        # Если проект AKR и тема задачи начинается с T****, используем только этот код
+                        project_task_value = f'Сопровождение {month_name}'
+                        try:
+                            if project_key == 'AKR' and isinstance(issue_summary, str):
+                                m = re.match(r"^(T\d+)", issue_summary.strip())
+                                if m:
+                                    project_task_value = m.group(1)
+                        except Exception:
+                            # В случае любых проблем оставляем значение по умолчанию
+                            project_task_value = f'Сопровождение {month_name}'
+
                         worklog_data = {
                             'date': worklog_date.strftime('%Y-%-m-%-d %H:%M'),
                             'executor': author_name,
-                            'hours': str(hours).replace('.', ','),  # Заменяем точку на запятую для Excel
+                            'hours': hours_str.replace('.', ','),  # Заменяем точку на запятую для Excel
                             'description': ticket_description,
-                            'project_task': f'Сопровождение {month_name}',
+                            'project_task': project_task_value,
                             'task_summary': issue_summary,  # Тема задачи в отдельном столбце
                             'project': issue.fields.project.name
                         }
