@@ -132,7 +132,11 @@ class JiraClient:
                         
                         # Определяем название проектной задачи:
                         # Если проект AKR и тема задачи начинается с T****, используем только этот код
-                        project_task_value = f'Сопровождение {month_name}'
+                        # Начиная с 2026 года добавляем год к названию
+                        if worklog_date.year >= 2026:
+                            project_task_value = f'Сопровождение {month_name} {worklog_date.year}'
+                        else:
+                            project_task_value = f'Сопровождение {month_name}'
                         try:
                             if project_key == 'AKR' and isinstance(issue_summary, str):
                                 m = re.match(r"^(T\d+)", issue_summary.strip())
@@ -140,7 +144,10 @@ class JiraClient:
                                     project_task_value = m.group(1)
                         except Exception:
                             # В случае любых проблем оставляем значение по умолчанию
-                            project_task_value = f'Сопровождение {month_name}'
+                            if worklog_date.year >= 2026:
+                                project_task_value = f'Сопровождение {month_name} {worklog_date.year}'
+                            else:
+                                project_task_value = f'Сопровождение {month_name}'
 
                         worklog_data = {
                             'date': worklog_date.strftime('%Y-%-m-%-d %H:%M'),
