@@ -5,7 +5,7 @@
 1. Подготовить сервер: установить `git`, `docker`, `docker compose` (или `docker-compose`).
 2. Запустить первичную установку:
 ```bash
-./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+./scripts/install_prod.sh /opt/jira2excel main
 ```
 3. Если скрипт создал `.env` и завершился - заполнить `.env` и повторить команду установки.
 4. Проверить запуск:

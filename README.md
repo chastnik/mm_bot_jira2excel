@@ -153,9 +153,9 @@ cd /opt
 2) Склонируйте репозиторий и выполните первичную установку:
 
 ```bash
-git clone <repo_url> jira2excel
+git clone https://github.com/chastnik/mm_bot_jira2excel jira2excel
 cd jira2excel
-./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+./scripts/install_prod.sh /opt/jira2excel main
 ```
 
 3) Если `.env` еще не заполнен, скрипт создаст его из `env.example` и завершится. Заполните `.env`, затем запустите установку повторно:
@@ -163,7 +163,7 @@ cd jira2excel
 ```bash
 cd /opt/jira2excel
 nano .env
-./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+./scripts/install_prod.sh /opt/jira2excel main
 ```
 
 4) Проверьте, что контейнер запущен и бот пишет логи:
@@ -182,13 +182,15 @@ docker compose -f docker-compose.prod.yml logs -f --tail=100
 ### Первичная установка
 
 ```bash
-./scripts/install_prod.sh <repo_url> [install_dir] [branch]
+./scripts/install_prod.sh [repo_url] [install_dir] [branch]
 ```
 
 Пример:
 
 ```bash
-./scripts/install_prod.sh git@github.com:org/jira2excel.git /opt/jira2excel main
+./scripts/install_prod.sh /opt/jira2excel main
+# или явно указать URL:
+./scripts/install_prod.sh https://github.com/chastnik/mm_bot_jira2excel /opt/jira2excel main
 ```
 
 Что делает скрипт:

@@ -2,18 +2,24 @@
 set -euo pipefail
 
 # Usage:
-#   ./scripts/install_prod.sh <repo_url> [install_dir] [branch]
+#   ./scripts/install_prod.sh [repo_url] [install_dir] [branch]
 # Example:
-#   ./scripts/install_prod.sh git@github.com:org/jira2excel.git /opt/jira2excel main
+#   ./scripts/install_prod.sh https://github.com/chastnik/mm_bot_jira2excel /opt/jira2excel main
+#   ./scripts/install_prod.sh /opt/jira2excel main  # uses default repo URL
 
-REPO_URL="${1:-}"
-INSTALL_DIR="${2:-/opt/jira2excel}"
-BRANCH="${3:-main}"
+DEFAULT_REPO_URL="https://github.com/chastnik/mm_bot_jira2excel"
 
-if [[ -z "${REPO_URL}" ]]; then
-  echo "Ошибка: не указан REPO_URL"
-  echo "Использование: $0 <repo_url> [install_dir] [branch]"
-  exit 1
+# Backward-compatible argument parsing:
+# - If 1st arg looks like URL, treat it as repo URL.
+# - Otherwise treat args as [install_dir] [branch] and use default repo URL.
+if [[ "${1:-}" =~ ^https?://|^git@ ]]; then
+  REPO_URL="${1}"
+  INSTALL_DIR="${2:-/opt/jira2excel}"
+  BRANCH="${3:-main}"
+else
+  REPO_URL="${DEFAULT_REPO_URL}"
+  INSTALL_DIR="${1:-/opt/jira2excel}"
+  BRANCH="${2:-main}"
 fi
 
 require_cmd() {
