@@ -16,6 +16,20 @@
 - 📝 Расширенное описание работ с темой задачи и отдельным столбцом для Jira
 - 📅 Корректное отображение дат в российском формате как текст
 
+## Архитектура бота
+
+```mermaid
+flowchart LR
+    U[Пользователь в Mattermost] --> MM[DM с ботом]
+    MM --> B[Бот jira2excel]
+    B -->|REST API| J[Jira]
+    J --> B
+    B --> X[Excel отчет]
+    B --> S[(state/user_sessions.json)]
+    B --> L[(state/bot.log)]
+    X --> MM
+```
+
 ## Формат отчета
 
 Бот генерирует Excel файлы со следующими столбцами:
@@ -104,11 +118,66 @@ nohup python main.py > bot.log 2>&1 &
 - `scripts/update_prod.sh` — обновление (получение изменений из Git + пересборка и перезапуск)
 - `scripts/status_prod.sh` — проверка статуса контейнера, логов и версии кода
 
+### Схема прод-цикла (Docker)
+
+```mermaid
+flowchart TD
+    A[Сервер с Docker и Git] --> B[install_prod.sh]
+    B --> C{Есть .env?}
+    C -- Нет --> D[Создать из env.example и заполнить]
+    D --> B
+    C -- Да --> E[docker compose up -d --build]
+    E --> F[status_prod.sh / логи]
+    F --> G[Работа в проде]
+    G --> H[update_prod.sh]
+    H --> I[Бэкап .env и state]
+    I --> J[git pull + пересборка]
+    J --> G
+```
+
 ### Требования на сервере
 
 - `git`
 - `docker`
 - `docker compose` (или `docker-compose`)
+
+### Пошаговая установка бота в проде (Docker)
+
+1) Подключитесь к серверу и перейдите в директорию, где будет запуск:
+
+```bash
+ssh <user>@<server>
+cd /opt
+```
+
+2) Склонируйте репозиторий и выполните первичную установку:
+
+```bash
+git clone <repo_url> jira2excel
+cd jira2excel
+./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+```
+
+3) Если `.env` еще не заполнен, скрипт создаст его из `env.example` и завершится. Заполните `.env`, затем запустите установку повторно:
+
+```bash
+cd /opt/jira2excel
+nano .env
+./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+```
+
+4) Проверьте, что контейнер запущен и бот пишет логи:
+
+```bash
+./scripts/status_prod.sh /opt/jira2excel
+docker compose -f docker-compose.prod.yml logs -f --tail=100
+```
+
+5) Для последующих обновлений используйте:
+
+```bash
+./scripts/update_prod.sh /opt/jira2excel main
+```
 
 ### Первичная установка
 
@@ -177,6 +246,27 @@ nohup python main.py > bot.log 2>&1 &
 ### Процесс генерации отчета
 
 ⚠️ **Важно: Бот работает только в прямых сообщениях!**
+
+```mermaid
+sequenceDiagram
+    participant User as Пользователь
+    participant Bot as Бот
+    participant Jira as Jira
+
+    User->>Bot: настройка
+    Bot-->>User: запрос логина/пароля Jira
+    User->>Bot: ввод данных
+    Bot->>Jira: проверка подключения
+    Jira-->>Bot: OK
+    Bot-->>User: настройки сохранены
+
+    User->>Bot: отчет
+    Bot-->>User: запрос проекта(ов) и периода
+    User->>Bot: PROJ1, PROJ2 + период
+    Bot->>Jira: загрузка worklog данных
+    Jira-->>Bot: данные задач и трудозатрат
+    Bot-->>User: Excel файл с отчетом
+```
 
 #### Первое использование:
 1. Откройте прямые сообщения с ботом в Mattermost

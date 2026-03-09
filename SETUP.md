@@ -1,5 +1,23 @@
 # Настройка переменных окружения
 
+## Короткий чеклист: установка в проде через Docker
+
+1. Подготовить сервер: установить `git`, `docker`, `docker compose` (или `docker-compose`).
+2. Запустить первичную установку:
+```bash
+./scripts/install_prod.sh <repo_url> /opt/jira2excel main
+```
+3. Если скрипт создал `.env` и завершился - заполнить `.env` и повторить команду установки.
+4. Проверить запуск:
+```bash
+./scripts/status_prod.sh /opt/jira2excel
+docker compose -f docker-compose.prod.yml logs -f --tail=100
+```
+5. Обновлять прод через:
+```bash
+./scripts/update_prod.sh /opt/jira2excel main
+```
+
 ## Создание файла .env
 
 1. Скопируйте файл `env.example` в `.env`:
