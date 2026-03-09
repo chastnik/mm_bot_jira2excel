@@ -94,6 +94,7 @@ class MattermostBot:
         собственный SSL-контекст, несовместимый с некоторыми реверс-прокси.
         """
         import mattermostdriver.client as _mc
+
         _mc.requests = _mm_session
 
     async def connect(self):
@@ -114,7 +115,9 @@ class MattermostBot:
                 # get_user("me") обычно стабильнее, чем поиск по username.
                 self.bot_user = self.driver.users.get_user("me")
                 if not self.bot_user:
-                    self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
+                    self.bot_user = self.driver.users.get_user_by_username(
+                        Config.BOT_NAME
+                    )
 
                 logger.info(f"Бот запущен как: {self.bot_user['username']}")
                 self._connected = True
@@ -181,12 +184,15 @@ class MattermostBot:
                     now = time.time()
                     should_refresh_channels = (
                         not dm_channels
-                        or (now - last_channels_refresh) >= channels_refresh_interval_sec
+                        or (now - last_channels_refresh)
+                        >= channels_refresh_interval_sec
                     )
 
                     if should_refresh_channels:
                         if not team_id:
-                            teams = self.driver.teams.get_user_teams(self.bot_user["id"])
+                            teams = self.driver.teams.get_user_teams(
+                                self.bot_user["id"]
+                            )
                             if teams:
                                 team_id = teams[0]["id"]
                                 logger.info(
@@ -1145,7 +1151,9 @@ class MattermostBot:
         """Отключение от Mattermost"""
         self.request_stop()
         if not self._connected:
-            logger.info("Пропускаем logout: соединение с Mattermost не было установлено")
+            logger.info(
+                "Пропускаем logout: соединение с Mattermost не было установлено"
+            )
             return
         try:
             self.driver.logout()
@@ -1279,7 +1287,9 @@ class MattermostBot:
                 # get_user("me") обычно стабильнее, чем поиск по username.
                 self.bot_user = self.driver.users.get_user("me")
                 if not self.bot_user:
-                    self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
+                    self.bot_user = self.driver.users.get_user_by_username(
+                        Config.BOT_NAME
+                    )
 
                 logger.info(f"Бот запущен как: {self.bot_user['username']}")
                 self._connected = True

@@ -70,17 +70,13 @@ class JiraClient:
             logger.error(error_msg)
             return False, error_msg
         except RequestsConnectionError:
-            error_msg = (
-                "Не удалось подключиться к Jira. Проверьте адрес Jira и сетевую доступность."
-            )
+            error_msg = "Не удалось подключиться к Jira. Проверьте адрес Jira и сетевую доступность."
             logger.error(error_msg)
             return False, error_msg
         except JIRAError as e:
             status_code = getattr(e, "status_code", None)
             if status_code in (401, 403):
-                error_msg = (
-                    "Ошибка авторизации Jira (401/403). Проверьте имя пользователя и пароль."
-                )
+                error_msg = "Ошибка авторизации Jira (401/403). Проверьте имя пользователя и пароль."
             else:
                 error_msg = f"Ошибка Jira API: {str(e)}"
             logger.error(error_msg)
