@@ -1,5 +1,4 @@
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side, NamedStyle
 from openpyxl.utils import get_column_letter
 from typing import List, Dict, Optional
 import logging

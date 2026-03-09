@@ -6,7 +6,6 @@
 import logging
 import signal
 import sys
-import time
 import urllib3
 from config import Config
 from mattermost_bot import MattermostBot

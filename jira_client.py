@@ -1,7 +1,7 @@
 from jira import JIRA
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from config import Config

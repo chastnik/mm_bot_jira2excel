@@ -2,17 +2,13 @@ from mattermostdriver import Driver
 import asyncio
 import logging
 import json
-import re
-import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict
 from config import Config
 from jira_client import JiraClient
 from excel_generator import ExcelGenerator
 from user_auth import UserAuthManager
 from date_parser import DateParser
-import threading
-import urllib.parse
 import time
 import urllib3
 
@@ -161,7 +157,7 @@ class MattermostBot:
                         except Exception as e:
                             # Проверяем на ошибку авторизации
                             if "неверная или истекшая сессия" in str(e).lower() or "unauthorized" in str(e).lower():
-                                logger.warning(f"🔄 Переподключаемся из-за истекшей сессии...")
+                                logger.warning("🔄 Переподключаемся из-за истекшей сессии...")
                                 try:
                                     self.driver.login()
                                     logger.info("✅ Переподключение успешно")
@@ -177,7 +173,7 @@ class MattermostBot:
                 except Exception as e:
                     # Проверяем на ошибку авторизации
                     if "неверная или истекшая сессия" in str(e).lower() or "unauthorized" in str(e).lower():
-                        logger.warning(f"🔄 Переподключаемся из-за истекшей сессии...")
+                        logger.warning("🔄 Переподключаемся из-за истекшей сессии...")
                         try:
                             self.driver.login()
                             logger.info("✅ Переподключение успешно")
@@ -896,7 +892,7 @@ class MattermostBot:
                     'channel_id': channel_id,
                     'message': error_msg
                 })
-            except:
+            except Exception:
                 logger.error("Не удалось отправить даже сообщение об ошибке")
     
     def send_file_sync(self, channel_id: str, file_data: bytes, filename: str, message: str = ""):
