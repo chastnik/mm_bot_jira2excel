@@ -1,6 +1,6 @@
 mattermostdriver==7.3.2
-jira==3.5.2
-openpyxl==3.1.2
-python-dotenv==1.0.0
-requests==2.31.0
-cryptography==41.0.7 
+jira==3.10.5
+openpyxl==3.1.5
+python-dotenv==1.2.2
+requests==2.32.5
+cryptography==46.0.5
