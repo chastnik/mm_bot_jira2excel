@@ -1,0 +1,11 @@
+services:
+  bot:
+    container_name: jira2excel-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./state:/app/state

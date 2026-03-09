@@ -96,6 +96,74 @@ python main.py
 nohup python main.py > bot.log 2>&1 &
 ```
 
+## Продакшн в Docker (установка и обновление из Git)
+
+Добавлены скрипты для развертывания на сервере через Docker Compose:
+
+- `scripts/install_prod.sh` — первичная установка (клонирование репозитория + первый запуск)
+- `scripts/update_prod.sh` — обновление (получение изменений из Git + пересборка и перезапуск)
+- `scripts/status_prod.sh` — проверка статуса контейнера, логов и версии кода
+
+### Требования на сервере
+
+- `git`
+- `docker`
+- `docker compose` (или `docker-compose`)
+
+### Первичная установка
+
+```bash
+./scripts/install_prod.sh <repo_url> [install_dir] [branch]
+```
+
+Пример:
+
+```bash
+./scripts/install_prod.sh git@github.com:org/jira2excel.git /opt/jira2excel main
+```
+
+Что делает скрипт:
+1. Клонирует репозиторий в `install_dir` (по умолчанию `/opt/jira2excel`)
+2. Если нет `.env`, создает его из `env.example` и просит заполнить
+3. Запускает контейнер: `docker compose -f docker-compose.prod.yml up -d --build`
+
+### Обновление на проде
+
+```bash
+./scripts/update_prod.sh [install_dir] [branch]
+```
+
+Пример:
+
+```bash
+./scripts/update_prod.sh /opt/jira2excel main
+```
+
+Что делает скрипт:
+1. Создает бэкап `.env` и `state/user_sessions.json` в `backups/`
+2. Выполняет `git fetch`/`git pull --ff-only`
+3. Пересобирает и перезапускает контейнер
+
+### Проверка статуса на проде
+
+```bash
+./scripts/status_prod.sh [install_dir]
+```
+
+Пример:
+
+```bash
+./scripts/status_prod.sh /opt/jira2excel
+```
+
+### Хранение состояния
+
+В `docker-compose.prod.yml` подключен volume `./state:/app/state`, а entrypoint контейнера
+сохраняет:
+
+- `bot.log` в `state/bot.log`
+- `user_sessions.json` в `state/user_sessions.json`
+
 ## Использование
 
 ### Команды бота
@@ -276,6 +344,18 @@ mm_bot_jira/
 - Файл `bot.log`
 
 Уровень логирования настраивается через переменную `LOG_LEVEL` в `.env`.
+
+## CI
+
+В проекте настроен GitHub Actions workflow `.github/workflows/ci.yml` с двумя jobs:
+
+- `python-checks`:
+  - установка зависимостей из `requirements-dev.txt`
+  - `ruff check .`
+  - `black --check .`
+  - `pytest` (если есть директория `tests/`)
+- `docker-build`:
+  - проверка сборки Docker-образа командой `docker build -t jira2excel-ci .`
 
 ## Устранение неполадок
 
