@@ -8,13 +8,14 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+
 class JiraClient:
     """Клиент для работы с Jira API с индивидуальными учетными данными"""
-    
+
     def __init__(self, username: str = None, password: str = None):
         """
         Инициализация клиента Jira с индивидуальными учетными данными
-        
+
         Args:
             username: Имя пользователя для аутентификации в Jira
             password: Пароль пользователя для Jira
@@ -22,31 +23,25 @@ class JiraClient:
         self.jira = None
         if username and password:
             self._connect(username, password)
-    
+
     def _connect(self, username: str, password: str):
         """Подключение к Jira с указанными учетными данными"""
         try:
-            self.jira = JIRA(
-                server=Config.JIRA_URL,
-                basic_auth=(username, password)
-            )
+            self.jira = JIRA(server=Config.JIRA_URL, basic_auth=(username, password))
             logger.info(f"Успешно подключились к Jira для пользователя {username}")
         except Exception as e:
             logger.error(f"Ошибка подключения к Jira для {username}: {e}")
             raise
-    
+
     def test_connection(self, username: str, password: str) -> tuple[bool, str]:
         """
         Проверить соединение с Jira для указанных учетных данных
-        
+
         Returns:
             tuple: (успешно, сообщение)
         """
         try:
-            test_jira = JIRA(
-                server=Config.JIRA_URL,
-                basic_auth=(username, password)
-            )
+            test_jira = JIRA(server=Config.JIRA_URL, basic_auth=(username, password))
             user = test_jira.current_user()
             logger.info(f"Тестовое подключение к Jira успешно для: {user}")
             return True, f"Успешно! Подключен как: {user}"
@@ -54,130 +49,167 @@ class JiraClient:
             error_msg = f"Ошибка подключения к Jira: {str(e)}"
             logger.error(error_msg)
             return False, error_msg
-    
+
     def get_projects(self) -> List[Dict]:
         """Получить список доступных проектов"""
         if not self.jira:
             logger.error("Jira клиент не инициализирован")
             return []
-            
+
         try:
             projects = self.jira.projects()
             return [{"key": p.key, "name": p.name} for p in projects]
         except Exception as e:
             logger.error(f"Ошибка получения списка проектов: {e}")
             return []
-    
-    def get_worklogs_for_project(self, project_key: str, start_date: str, end_date: str) -> List[Dict]:
+
+    def get_worklogs_for_project(
+        self, project_key: str, start_date: str, end_date: str
+    ) -> List[Dict]:
         """
         Получить трудозатраты по проекту за период
-        
+
         Args:
             project_key: Ключ проекта в Jira
             start_date: Дата начала в формате YYYY-MM-DD
             end_date: Дата окончания в формате YYYY-MM-DD
-        
+
         Returns:
             Список словарей с данными о трудозатратах
         """
         if not self.jira:
             logger.error("Jira клиент не инициализирован")
             return []
-            
+
         try:
             # JQL запрос для поиска задач проекта с worklog в указанном периоде
             jql = f'project = {project_key} AND worklogDate >= "{start_date}" AND worklogDate <= "{end_date}"'
-            
-            issues = self.jira.search_issues(jql, expand='worklog', maxResults=1000)
-            
+
+            issues = self.jira.search_issues(jql, expand="worklog", maxResults=1000)
+
             worklogs_data = []
-            
+
             for issue in issues:
                 # Получаем все worklog для задачи
                 worklogs = self.jira.worklogs(issue.key)
-                
+
                 for worklog in worklogs:
                     # Проверяем что worklog попадает в наш период
-                    worklog_date = datetime.strptime(worklog.started[:10], '%Y-%m-%d')
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                    
+                    worklog_date = datetime.strptime(worklog.started[:10], "%Y-%m-%d")
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
                     if start_dt <= worklog_date <= end_dt:
                         # Получаем автора worklog
-                        author_email = worklog.author.emailAddress if hasattr(worklog.author, 'emailAddress') else worklog.author.name
-                        author_name = author_email.split('@')[0] if '@' in author_email else author_email
-                        
+                        author_email = (
+                            worklog.author.emailAddress
+                            if hasattr(worklog.author, "emailAddress")
+                            else worklog.author.name
+                        )
+                        author_name = (
+                            author_email.split("@")[0]
+                            if "@" in author_email
+                            else author_email
+                        )
+
                         # Получаем часы (timeSpentSeconds переводим в часы) с точностью до сотых
                         # Используем Decimal, чтобы избежать проблем двоичной точности и лишнего округления
-                        hours_decimal = (Decimal(worklog.timeSpentSeconds) / Decimal(3600)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                        hours_decimal = (
+                            Decimal(worklog.timeSpentSeconds) / Decimal(3600)
+                        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                         # Убираем незначащие нули (например, 1.50 -> 1.5), но сохраняем 2 знака, если они значимы (например, 0.25)
-                        hours_str = format(hours_decimal.normalize(), 'f')
-                        
+                        hours_str = format(hours_decimal.normalize(), "f")
+
                         # Формируем месяц для проектной задачи
                         month_names = {
-                            1: 'Январь', 2: 'Февраль', 3: 'Март', 4: 'Апрель',
-                            5: 'Май', 6: 'Июнь', 7: 'Июль', 8: 'Август',
-                            9: 'Сентябрь', 10: 'Октябрь', 11: 'Ноябрь', 12: 'Декабрь'
+                            1: "Январь",
+                            2: "Февраль",
+                            3: "Март",
+                            4: "Апрель",
+                            5: "Май",
+                            6: "Июнь",
+                            7: "Июль",
+                            8: "Август",
+                            9: "Сентябрь",
+                            10: "Октябрь",
+                            11: "Ноябрь",
+                            12: "Декабрь",
                         }
-                        month_name = month_names.get(worklog_date.month, f"Месяц {worklog_date.month}")
-                        
+                        month_name = month_names.get(
+                            worklog_date.month, f"Месяц {worklog_date.month}"
+                        )
+
                         # Получаем тему задачи для отдельного столбца
-                        issue_summary = issue.fields.summary if hasattr(issue.fields, 'summary') else "Без темы"
-                        
+                        issue_summary = (
+                            issue.fields.summary
+                            if hasattr(issue.fields, "summary")
+                            else "Без темы"
+                        )
+
                         # Формируем описание работы в формате "Номер задачи - Тема задачи: Состав работ"
                         if worklog.comment:
-                            ticket_description = f"{issue.key} - {issue_summary}: {worklog.comment}"
+                            ticket_description = (
+                                f"{issue.key} - {issue_summary}: {worklog.comment}"
+                            )
                         else:
                             ticket_description = f"{issue.key} - {issue_summary}"
-                        
+
                         # Определяем название проектной задачи:
                         # Если проект AKR и тема задачи начинается с T****, используем только этот код
                         # Начиная с 2026 года добавляем год к названию
                         if worklog_date.year >= 2026:
-                            project_task_value = f'Сопровождение {month_name} {worklog_date.year}'
+                            project_task_value = (
+                                f"Сопровождение {month_name} {worklog_date.year}"
+                            )
                         else:
-                            project_task_value = f'Сопровождение {month_name}'
+                            project_task_value = f"Сопровождение {month_name}"
                         try:
-                            if project_key == 'AKR' and isinstance(issue_summary, str):
+                            if project_key == "AKR" and isinstance(issue_summary, str):
                                 m = re.match(r"^(T\d+)", issue_summary.strip())
                                 if m:
                                     project_task_value = m.group(1)
                         except Exception:
                             # В случае любых проблем оставляем значение по умолчанию
                             if worklog_date.year >= 2026:
-                                project_task_value = f'Сопровождение {month_name} {worklog_date.year}'
+                                project_task_value = (
+                                    f"Сопровождение {month_name} {worklog_date.year}"
+                                )
                             else:
-                                project_task_value = f'Сопровождение {month_name}'
+                                project_task_value = f"Сопровождение {month_name}"
 
                         worklog_data = {
-                            'date': worklog_date.strftime('%Y-%-m-%-d %H:%M'),
-                            'executor': author_name,
-                            'hours': hours_str.replace('.', ','),  # Заменяем точку на запятую для Excel
-                            'description': ticket_description,
-                            'project_task': project_task_value,
-                            'task_summary': issue_summary,  # Тема задачи в отдельном столбце
-                            'project': issue.fields.project.name
+                            "date": worklog_date.strftime("%Y-%-m-%-d %H:%M"),
+                            "executor": author_name,
+                            "hours": hours_str.replace(
+                                ".", ","
+                            ),  # Заменяем точку на запятую для Excel
+                            "description": ticket_description,
+                            "project_task": project_task_value,
+                            "task_summary": issue_summary,  # Тема задачи в отдельном столбце
+                            "project": issue.fields.project.name,
                         }
-                        
+
                         worklogs_data.append(worklog_data)
-            
-            logger.info(f"Найдено {len(worklogs_data)} записей трудозатрат для проекта {project_key}")
+
+            logger.info(
+                f"Найдено {len(worklogs_data)} записей трудозатрат для проекта {project_key}"
+            )
             return worklogs_data
-            
+
         except Exception as e:
             logger.error(f"Ошибка получения трудозатрат: {e}")
             return []
-    
+
     def test_current_connection(self) -> bool:
         """Проверить текущее соединение с Jira"""
         if not self.jira:
             logger.error("Jira клиент не инициализирован")
             return False
-            
+
         try:
             user = self.jira.current_user()
             logger.info(f"Подключен к Jira как: {user}")
             return True
         except Exception as e:
             logger.error(f"Ошибка тестирования соединения с Jira: {e}")
-            return False 
+            return False
