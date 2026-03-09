@@ -1,9 +1,11 @@
 from jira import JIRA
+from jira.exceptions import JIRAError
 from datetime import datetime
 import logging
 from typing import List, Dict
 import re
 from decimal import Decimal, ROUND_HALF_UP
+from requests.exceptions import Timeout, ConnectionError as RequestsConnectionError
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -24,10 +26,20 @@ class JiraClient:
         if username and password:
             self._connect(username, password)
 
+    @staticmethod
+    def _request_timeout() -> tuple[int, int]:
+        """Единый таймаут для connect/read в requests."""
+        timeout = Config.JIRA_REQUEST_TIMEOUT
+        return (timeout, timeout)
+
     def _connect(self, username: str, password: str):
         """Подключение к Jira с указанными учетными данными"""
         try:
-            self.jira = JIRA(server=Config.JIRA_URL, basic_auth=(username, password))
+            self.jira = JIRA(
+                server=Config.JIRA_URL,
+                basic_auth=(username, password),
+                timeout=self._request_timeout(),
+            )
             logger.info(f"Успешно подключились к Jira для пользователя {username}")
         except Exception as e:
             logger.error(f"Ошибка подключения к Jira для {username}: {e}")
@@ -41,10 +53,38 @@ class JiraClient:
             tuple: (успешно, сообщение)
         """
         try:
-            test_jira = JIRA(server=Config.JIRA_URL, basic_auth=(username, password))
+            test_jira = JIRA(
+                server=Config.JIRA_URL,
+                basic_auth=(username, password),
+                timeout=self._request_timeout(),
+            )
             user = test_jira.current_user()
             logger.info(f"Тестовое подключение к Jira успешно для: {user}")
             return True, f"Успешно! Подключен как: {user}"
+        except Timeout:
+            timeout_sec = Config.JIRA_REQUEST_TIMEOUT
+            error_msg = (
+                f"Таймаут подключения к Jira ({timeout_sec} сек). "
+                "Проверьте доступность Jira и сеть, затем попробуйте снова."
+            )
+            logger.error(error_msg)
+            return False, error_msg
+        except RequestsConnectionError:
+            error_msg = (
+                "Не удалось подключиться к Jira. Проверьте адрес Jira и сетевую доступность."
+            )
+            logger.error(error_msg)
+            return False, error_msg
+        except JIRAError as e:
+            status_code = getattr(e, "status_code", None)
+            if status_code in (401, 403):
+                error_msg = (
+                    "Ошибка авторизации Jira (401/403). Проверьте имя пользователя и пароль."
+                )
+            else:
+                error_msg = f"Ошибка Jira API: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
         except Exception as e:
             error_msg = f"Ошибка подключения к Jira: {str(e)}"
             logger.error(error_msg)

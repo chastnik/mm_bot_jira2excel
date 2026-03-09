@@ -32,6 +32,7 @@ class BotManager:
     def __init__(self):
         self.bot = None
         self.running = False
+        self.stopping = False
 
     def start(self):
         """Запуск бота"""
@@ -59,8 +60,13 @@ class BotManager:
 
     def stop(self):
         """Остановка бота"""
+        if self.stopping:
+            return
+
+        self.stopping = True
         if self.bot:
             logger.info("Останавливаем бота...")
+            self.bot.request_stop()
             self.bot.disconnect()
         self.running = False
         logger.info("Бот остановлен")

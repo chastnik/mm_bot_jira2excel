@@ -15,9 +15,15 @@ class Config:
     MATTERMOST_USE_WEBSOCKET = (
         os.getenv("MATTERMOST_USE_WEBSOCKET", "true").lower() == "true"
     )
+    MATTERMOST_REQUEST_TIMEOUT = int(os.getenv("MATTERMOST_REQUEST_TIMEOUT", "10"))
+    MATTERMOST_CONNECT_RETRIES = int(os.getenv("MATTERMOST_CONNECT_RETRIES", "5"))
+    MATTERMOST_CONNECT_RETRY_DELAY = int(
+        os.getenv("MATTERMOST_CONNECT_RETRY_DELAY", "2")
+    )
 
     # Jira настройки (только URL, учетные данные индивидуальные)
     JIRA_URL = os.getenv("JIRA_URL")
+    JIRA_REQUEST_TIMEOUT = int(os.getenv("JIRA_REQUEST_TIMEOUT", "20"))
 
     # Настройки бота
     BOT_NAME = os.getenv("BOT_NAME", "jira-timesheet-bot")

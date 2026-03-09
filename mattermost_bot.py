@@ -2,6 +2,7 @@ from mattermostdriver import Driver
 import asyncio
 import logging
 import json
+import ssl
 from datetime import datetime
 from typing import Dict
 from config import Config
@@ -11,6 +12,9 @@ from user_auth import UserAuthManager
 from date_parser import DateParser
 import time
 import urllib3
+import requests as _requests_mod
+from requests.adapters import HTTPAdapter
+from threading import Event
 
 # Отключаем SSL предупреждения для production среды
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,11 +22,43 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
 
+class _StandardSSLAdapter(HTTPAdapter):
+    """HTTPAdapter, использующий стандартный SSL-контекст Python вместо
+    кастомного urllib3-контекста, который вызывает таймаут SSL-хендшейка
+    с некоторыми реверс-прокси (например, nginx с HTTP/2)."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        if not Config.MATTERMOST_SSL_VERIFY:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        kwargs["ssl_context"] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+
+# Глобальная сессия с правильным SSL для всех запросов к Mattermost
+_mm_session = _requests_mod.Session()
+_mm_session.mount("https://", _StandardSSLAdapter())
+
+
 class MattermostBot:
     """Бот для Mattermost с интеграцией Jira"""
 
     def __init__(self):
         """Инициализация бота"""
+        self._stop_event = Event()
+        self._connected = False
+
+        self.driver = self._create_driver()
+        self.excel_generator = ExcelGenerator()
+        self.user_auth = (
+            UserAuthManager()
+        )  # Управление индивидуальными учетными данными
+        self.date_parser = DateParser()  # Парсер дат в свободном формате
+        self.loop = None  # Будет установлен в connect()
+
+    def _create_driver(self) -> Driver:
+        """Создание нового Mattermost Driver."""
         # Правильная очистка URL от протокола
         clean_url = Config.MATTERMOST_URL if Config.MATTERMOST_URL else ""
         if clean_url.startswith("https://"):
@@ -30,7 +66,7 @@ class MattermostBot:
         elif clean_url.startswith("http://"):
             clean_url = clean_url[7:]  # Удаляем 'http://'
 
-        self.driver = Driver(
+        driver = Driver(
             {
                 "url": clean_url,
                 "token": Config.MATTERMOST_TOKEN,
@@ -38,7 +74,7 @@ class MattermostBot:
                 "port": 443,
                 "basepath": "/api/v4",
                 "verify": Config.MATTERMOST_SSL_VERIFY,
-                "request_timeout": 30,
+                "request_timeout": Config.MATTERMOST_REQUEST_TIMEOUT,
                 "websocket_kw_args": {
                     "sslopt": (
                         {"cert_reqs": None} if not Config.MATTERMOST_SSL_VERIFY else {}
@@ -47,38 +83,63 @@ class MattermostBot:
             }
         )
 
-        self.excel_generator = ExcelGenerator()
-        self.user_auth = (
-            UserAuthManager()
-        )  # Управление индивидуальными учетными данными
-        self.date_parser = DateParser()  # Парсер дат в свободном формате
-        self.loop = None  # Будет установлен в connect()
+        self._patch_driver_ssl(driver)
+        return driver
+
+    @staticmethod
+    def _patch_driver_ssl(driver):
+        """Подменяем HTTP-вызовы драйвера на сессию со стандартным SSL-контекстом.
+
+        mattermostdriver использует requests.get/post/… напрямую; urllib3 создаёт
+        собственный SSL-контекст, несовместимый с некоторыми реверс-прокси.
+        """
+        import mattermostdriver.client as _mc
+        _mc.requests = _mm_session
 
     async def connect(self):
         """Подключение к Mattermost"""
-        try:
-            # Сохраняем текущий event loop
-            self.loop = asyncio.get_event_loop()
+        # Сохраняем текущий event loop
+        self.loop = asyncio.get_event_loop()
 
-            self.driver.login()
-            logger.info("Успешно подключились к Mattermost")
+        attempts = max(1, Config.MATTERMOST_CONNECT_RETRIES)
+        base_delay = max(1, Config.MATTERMOST_CONNECT_RETRY_DELAY)
 
-            # Получаем информацию о боте
-            self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
-            if not self.bot_user:
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                # Создаем fresh session для каждой попытки: помогает при SSL EOF
+                self.driver = self._create_driver()
+                self.driver.login()
+                # Получаем информацию о боте.
+                # get_user("me") обычно стабильнее, чем поиск по username.
                 self.bot_user = self.driver.users.get_user("me")
+                if not self.bot_user:
+                    self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
 
-            logger.info(f"Бот запущен как: {self.bot_user['username']}")
+                logger.info(f"Бот запущен как: {self.bot_user['username']}")
+                self._connected = True
+                logger.info("Успешно подключились к Mattermost")
 
-            # Проверяем доступность существующих DM каналов
-            await self._verify_dm_channels()
+                # Проверяем доступность существующих DM каналов
+                await self._verify_dm_channels()
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Подключение к Mattermost не удалось (попытка {attempt}/{attempts}): {e}"
+                )
+                if attempt < attempts:
+                    delay = base_delay * attempt
+                    logger.info(f"Повтор подключения через {delay} сек...")
+                    self._sleep_with_stop(delay)
 
-        except Exception as e:
-            logger.error(f"Ошибка подключения к Mattermost: {e}")
-            raise
+        logger.error(f"Ошибка подключения к Mattermost: {last_error}")
+        raise last_error
 
     def start_listening(self):
         """Запуск прослушивания сообщений"""
+        self._stop_event.clear()
+
         if Config.MATTERMOST_USE_WEBSOCKET:
             try:
                 logger.info("Запускаем WebSocket соединение...")
@@ -100,30 +161,50 @@ class MattermostBot:
 
         last_check = int(time.time() * 1000)  # Миллисекунды
         dm_channels_cache = set()  # Кэш найденных DM каналов
+        dm_channels = []
+        last_channels_refresh = 0.0
+        channels_refresh_interval_sec = 60.0
 
-        while True:
+        team_id = Config.MATTERMOST_TEAM_ID
+        if not team_id:
+            logger.warning(
+                "MATTERMOST_TEAM_ID не задан. Будет использовано автоопределение команды."
+            )
+
+        while not self._stop_event.is_set():
             try:
                 current_time = int(time.time() * 1000)
                 logger.debug(f"Проверка новых сообщений в {current_time}")
 
                 # Получаем все DM каналы, где участвует бот
                 try:
-                    # Получаем все каналы бота через team_id
-                    teams = self.driver.teams.get_user_teams(self.bot_user["id"])
-                    all_channels = []
+                    now = time.time()
+                    should_refresh_channels = (
+                        not dm_channels
+                        or (now - last_channels_refresh) >= channels_refresh_interval_sec
+                    )
 
-                    if teams:
-                        # Используем первую команду для получения каналов
-                        team_id = teams[0]["id"]
-                        logger.debug(f"Используем team_id: {team_id}")
+                    if should_refresh_channels:
+                        if not team_id:
+                            teams = self.driver.teams.get_user_teams(self.bot_user["id"])
+                            if teams:
+                                team_id = teams[0]["id"]
+                                logger.info(
+                                    f"Автоматически определен team_id для polling: {team_id}"
+                                )
+                            else:
+                                logger.warning("Не найдено команд для пользователя")
+                                self._sleep_with_stop(5)
+                                continue
+
                         all_channels = self.driver.channels.get_channels_for_user(
                             self.bot_user["id"], team_id
                         )
-                    else:
-                        logger.warning("Не найдено команд для пользователя")
-
-                    # Фильтруем только DM каналы (тип 'D')
-                    dm_channels = [ch for ch in all_channels if ch.get("type") == "D"]
+                        # Фильтруем только DM каналы (тип 'D')
+                        dm_channels = [
+                            ch for ch in all_channels if ch.get("type") == "D"
+                        ]
+                        last_channels_refresh = now
 
                     # Логируем найденные каналы
                     current_dm_ids = {ch["id"] for ch in dm_channels}
@@ -218,14 +299,26 @@ class MattermostBot:
                 last_check = current_time
 
                 # Пауза между проверками
-                time.sleep(10)
+                self._sleep_with_stop(10)
 
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки HTTP polling")
                 break
             except Exception as e:
                 logger.error(f"Ошибка в HTTP polling: {e}")
-                time.sleep(15)  # Пауза при ошибке
+                self._sleep_with_stop(15)  # Пауза при ошибке
+
+    def request_stop(self):
+        """Запрос на остановку фоновых циклов бота."""
+        self._stop_event.set()
+
+    def _sleep_with_stop(self, seconds: int):
+        """Прерываемый сон для быстрого graceful shutdown."""
+        end_time = time.time() + max(0, seconds)
+        while time.time() < end_time:
+            if self._stop_event.is_set():
+                break
+            time.sleep(0.2)
 
     def handle_post_sync(self, post):
         """Синхронная обработка поста из HTTP polling"""
@@ -1050,6 +1143,10 @@ class MattermostBot:
 
     def disconnect(self):
         """Отключение от Mattermost"""
+        self.request_stop()
+        if not self._connected:
+            logger.info("Пропускаем logout: соединение с Mattermost не было установлено")
+            return
         try:
             self.driver.logout()
             logger.info("Отключились от Mattermost")
@@ -1169,29 +1266,46 @@ class MattermostBot:
 
     def connect_sync(self):
         """Подключение к Mattermost (синхронная версия)"""
-        try:
-            self.driver.login()
-            logger.info("Успешно подключились к Mattermost")
+        attempts = max(1, Config.MATTERMOST_CONNECT_RETRIES)
+        base_delay = max(1, Config.MATTERMOST_CONNECT_RETRY_DELAY)
 
-            # Получаем информацию о боте
-            self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
-            if not self.bot_user:
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                # Создаем fresh session для каждой попытки: помогает при SSL EOF
+                self.driver = self._create_driver()
+                self.driver.login()
+                # Получаем информацию о боте.
+                # get_user("me") обычно стабильнее, чем поиск по username.
                 self.bot_user = self.driver.users.get_user("me")
+                if not self.bot_user:
+                    self.bot_user = self.driver.users.get_user_by_username(Config.BOT_NAME)
 
-            logger.info(f"Бот запущен как: {self.bot_user['username']}")
+                logger.info(f"Бот запущен как: {self.bot_user['username']}")
+                self._connected = True
+                logger.info("Успешно подключились к Mattermost")
 
-            # Проверяем сохраненные пользователи
-            authenticated_users = self.user_auth.get_authenticated_users_count()
-            if authenticated_users > 0:
-                logger.info(
-                    f"Загружено {authenticated_users} аутентифицированных пользователей"
+                # Проверяем сохраненные пользователи
+                authenticated_users = self.user_auth.get_authenticated_users_count()
+                if authenticated_users > 0:
+                    logger.info(
+                        f"Загружено {authenticated_users} аутентифицированных пользователей"
+                    )
+                else:
+                    logger.info("Нет аутентифицированных пользователей")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Подключение к Mattermost не удалось (попытка {attempt}/{attempts}): {e}"
                 )
-            else:
-                logger.info("Нет аутентифицированных пользователей")
+                if attempt < attempts:
+                    delay = base_delay * attempt
+                    logger.info(f"Повтор подключения через {delay} сек...")
+                    self._sleep_with_stop(delay)
 
-        except Exception as e:
-            logger.error(f"Ошибка подключения к Mattermost: {e}")
-            raise
+        logger.error(f"Ошибка подключения к Mattermost: {last_error}")
+        raise last_error
 
     def test_send_message(self, channel_id=None, message=None):
         """Тестовая функция для отправки сообщения"""

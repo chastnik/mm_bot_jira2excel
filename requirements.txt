@@ -3,4 +3,5 @@ jira==3.10.5
 openpyxl==3.1.5
 python-dotenv==1.2.2
 requests==2.32.5
+urllib3==1.26.20
 cryptography==46.0.5
